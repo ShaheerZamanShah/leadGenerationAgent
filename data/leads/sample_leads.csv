@@ -1,0 +1,11 @@
+id,name,first_name,title,company,company_website,linkedin_url,email,location,industry,company_size,source
+a1b2c3d4,Sarah Chen,Sarah,Founder & CEO,DataFlow Analytics,https://dataflow.io,https://linkedin.com/in/sarahchen,sarah@dataflow.io,San Francisco USA,SaaS,15-40,linkedin
+e5f6g7h8,Marcus Rodriguez,Marcus,Head of Operations,QuickShip Logistics,https://quickship.co,https://linkedin.com/in/marcusr,marcus@quickship.co,Austin USA,Logistics,50-120,linkedin
+i9j0k1l2,Priya Patel,Priya,Co-Founder,MedTrack Health,https://medtrack.health,https://linkedin.com/in/priyapatel,priya@medtrack.health,London UK,Healthcare,20-60,apollo
+m3n4o5p6,James O'Brien,James,CTO,LegalEase Platform,https://legalease.io,https://linkedin.com/in/jamesobrien,james@legalease.io,Dublin Ireland,Legal Tech,10-30,linkedin
+q7r8s9t0,Aisha Nakamura,Aisha,CEO,RetailBoost,https://retailboost.com,https://linkedin.com/in/aishanakamura,aisha@retailboost.com,Toronto Canada,E-commerce,30-80,apollo
+u1v2w3x4,David Kim,David,Founder,PropertyPulse,https://propertypulse.co,https://linkedin.com/in/davidkim,david@propertypulse.co,Sydney Australia,Real Estate,8-25,linkedin
+y5z6a7b8,Emma Wilson,Emma,VP of Sales,TalentHub HR,https://talenthub.io,https://linkedin.com/in/emmawilson,emma@talenthub.io,New York USA,HR Tech,40-100,linkedin
+c9d0e1f2,Omar Al-Rashid,Omar,Director of Engineering,FinFlow Payments,https://finflow.io,https://linkedin.com/in/omaralrashid,omar@finflow.io,Dubai UAE,FinTech,25-70,apollo
+g3h4i5j6,Sofia Andersen,Sofia,CEO,EduPath Learning,https://edupathlearning.com,https://linkedin.com/in/sofiaandersen,sofia@edupathlearning.com,Copenhagen Denmark,EdTech,15-45,linkedin
+k7l8m9n0,Raj Sharma,Raj,Founder,InsureBot,https://insurebot.ai,,raj@insurebot.ai,Mumbai India,InsurTech,10-30,reddit

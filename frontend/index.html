@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Outreach Agent — AI Client Discovery by Shaheer</title>
+  <meta name="description" content="AI-powered B2B lead discovery and personalised outreach by Muhammad Shaheer Zaman Shah, Agentic AI Developer." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/frontend/styles.css" />
+</head>
+<body>
+  <!-- ── Header ─────────────────────────────────────────────────────────── -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="header-brand">
+        <div class="avatar">SZ</div>
+        <div>
+          <div class="header-name">Muhammad Shaheer Zaman Shah</div>
+          <div class="header-title">AI/ML &amp; Agentic AI Developer</div>
+        </div>
+      </div>
+      <div class="header-badges">
+        <span class="badge badge-groq">Groq LLaMA-3</span>
+        <span class="badge badge-lang">LangGraph</span>
+        <span class="badge badge-tavily">Tavily</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Hero Section ───────────────────────────────────────────────────── -->
+  <section class="hero">
+    <div class="hero-content">
+      <div class="hero-glow"></div>
+      <h1 class="hero-title">
+        Find Your <span class="gradient-text">Perfect Clients</span>
+        <br />with Agentic AI
+      </h1>
+      <p class="hero-sub">
+        The agent researches the web &amp; LinkedIn, discovers decision-makers who need your AI services,
+        and crafts personalized outreach messages — all automatically.
+      </p>
+      <div class="config-row">
+        <div class="config-item">
+          <label>Lead Count</label>
+          <div class="slider-wrap">
+            <input type="range" id="leadCount" min="5" max="20" value="18" />
+            <span id="leadCountVal">18</span>
+          </div>
+        </div>
+        <div class="config-item">
+          <label>Target Channel</label>
+          <div class="channel-pills">
+            <button class="pill active" data-channel="email">Email</button>
+            <button class="pill active" data-channel="linkedin">LinkedIn</button>
+            <button class="pill active" data-channel="reddit">Reddit</button>
+          </div>
+        </div>
+      </div>
+      <button id="startBtn" class="start-btn" onclick="startCampaign()">
+        <span class="start-icon">⚡</span>
+        <span id="startBtnText">Start AI Research Campaign</span>
+        <div class="btn-shimmer"></div>
+      </button>
+    </div>
+  </section>
+
+  <!-- ── Main Content ───────────────────────────────────────────────────── -->
+  <main class="main" id="mainContent" style="display:none">
+
+    <!-- Stats Bar -->
+    <div class="stats-bar" id="statsBar">
+      <div class="stat-card">
+        <div class="stat-num" id="statDiscovered">0</div>
+        <div class="stat-label">Discovered</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num" id="statQualified">0</div>
+        <div class="stat-label">Qualified</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num" id="statResearched">0</div>
+        <div class="stat-label">Researched</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-num" id="statMessages">0</div>
+        <div class="stat-label">Messages</div>
+      </div>
+      <button class="export-btn" id="exportBtn" onclick="exportResults()" disabled>
+        ⬇ Export CSV
+      </button>
+    </div>
+
+    <!-- Tab Navigation -->
+    <div class="tabs">
+      <button class="tab active" id="tabLeads" onclick="switchTab('leads')">
+        🎯 Leads
+        <span class="tab-count" id="leadsCount">0</span>
+      </button>
+      <button class="tab" id="tabMessages" onclick="switchTab('messages')">
+        ✉ Messages
+        <span class="tab-count" id="messagesCount">0</span>
+      </button>
+      <button class="tab" id="tabLog" onclick="switchTab('log')">
+        📡 Live Feed
+        <span class="tab-dot pulsing" id="logDot"></span>
+      </button>
+    </div>
+
+    <!-- Leads Panel -->
+    <div class="panel" id="panelLeads">
+      <div class="leads-grid" id="leadsGrid">
+        <div class="empty-state">
+          <div class="empty-icon">🔍</div>
+          <div>Waiting for campaign to start...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Messages Panel -->
+    <div class="panel" id="panelMessages" style="display:none">
+      <div class="messages-list" id="messagesList">
+        <div class="empty-state">
+          <div class="empty-icon">✉</div>
+          <div>Messages will appear after research completes...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Log Panel -->
+    <div class="panel" id="panelLog" style="display:none">
+      <div class="log-feed" id="logFeed">
+        <div class="log-placeholder">Waiting for agent activity...</div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ── Progress Overlay ───────────────────────────────────────────────── -->
+  <div class="progress-overlay" id="progressOverlay" style="display:none">
+    <div class="progress-card">
+      <div class="progress-orb"></div>
+      <div class="progress-title" id="progressTitle">Starting campaign...</div>
+      <div class="progress-agent" id="progressAgent">Initializing agents</div>
+      <div class="progress-bar-wrap">
+        <div class="progress-bar" id="progressBar" style="width:5%"></div>
+      </div>
+      <div class="progress-steps">
+        <div class="step" id="step-finder">🔍 Finder</div>
+        <div class="step" id="step-scorer">📊 Scorer</div>
+        <div class="step" id="step-research">🔬 Research</div>
+        <div class="step" id="step-writer">✍ Writer</div>
+        <div class="step" id="step-sender">📤 Sender</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Message Modal ──────────────────────────────────────────────────── -->
+  <div class="modal-overlay" id="modalOverlay" onclick="closeModal()">
+    <div class="modal" onclick="event.stopPropagation()">
+      <button class="modal-close" onclick="closeModal()">✕</button>
+      <div id="modalContent"></div>
+    </div>
+  </div>
+
+  <script src="/frontend/app.js"></script>
+</body>
+</html>
