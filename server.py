@@ -373,6 +373,7 @@ def _run_pipeline(run_id: str, req: CampaignRequest, q: queue.Queue, run_opts: d
             "user_prompt": (req.prompt or "").strip(),
             "brief": {},
             "max_leads": run_opts.get("max_leads") or settings.max_leads_per_run,
+            "skip_discovery": False,
             "raw_leads": [],
             "verified_leads": [],
             "scored_leads": [],

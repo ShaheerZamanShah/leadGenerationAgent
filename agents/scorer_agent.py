@@ -34,10 +34,20 @@ def scorer_agent(state: OutreachState) -> dict:
     """LangGraph node: score verified leads and filter below threshold."""
     log_agent("ScorerAgent", "📊 Scoring & qualifying leads...", "info")
 
-    leads = state.get("verified_leads", []) or state.get("raw_leads", [])
-    if not leads:
-        log_agent("ScorerAgent", "No leads to score", "warn")
+    verified = state.get("verified_leads") or []
+    if not verified:
+        raw_count = len(state.get("raw_leads") or [])
+        if raw_count:
+            log_agent(
+                "ScorerAgent",
+                f"No verified leads to score — verifier dropped all {raw_count} prospect(s)",
+                "warn",
+            )
+        else:
+            log_agent("ScorerAgent", "No leads to score", "warn")
         return {"filtered_leads": [], "scored_leads": []}
+
+    leads = verified
 
     brief: SearchBrief = state.get("brief", {}) or {}
     threshold = settings.lead_score_threshold

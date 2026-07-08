@@ -9,6 +9,8 @@ Graph flow:
     ▼
   planner_agent       — prompt → structured campaign brief
     │
+    ├── [pre-loaded leads / --from-csv] → verifier
+    │
     ▼
   finder_agent        — discovers REAL prospects (LinkedIn + web)
     │
@@ -58,12 +60,28 @@ from utils.helpers import log_agent
 
 # ─── Conditional edges ───────────────────────────────────────────────────────
 
+def after_planner(state: OutreachState) -> str:
+    """Route: skip finder when leads were pre-loaded (e.g. --from-csv)."""
+    if state.get("skip_discovery") or state.get("raw_leads"):
+        log_agent("Pipeline", "Pre-loaded leads detected — skipping discovery", "info")
+        return "verifier"
+    return "finder"
+
+
 def after_finder(state: OutreachState) -> str:
     """Route: if no prospects discovered, end early."""
     if not state.get("raw_leads"):
         log_agent("Pipeline", "No prospects discovered — ending pipeline", "warn")
         return "end"
     return "verifier"
+
+
+def after_verifier(state: OutreachState) -> str:
+    """Route: if verifier kept no leads, end early (respect strict filtering)."""
+    if not state.get("verified_leads"):
+        log_agent("Pipeline", "No verified leads after verification — ending pipeline", "warn")
+        return "end"
+    return "scorer"
 
 
 def after_scorer(state: OutreachState) -> str:
@@ -98,7 +116,12 @@ def build_graph():
     graph.add_node("sender", sender_agent)
 
     graph.add_edge(START, "planner")
-    graph.add_edge("planner", "finder")
+
+    graph.add_conditional_edges(
+        "planner",
+        after_planner,
+        {"finder": "finder", "verifier": "verifier"},
+    )
 
     graph.add_conditional_edges(
         "finder",
@@ -106,7 +129,11 @@ def build_graph():
         {"verifier": "verifier", "end": END},
     )
 
-    graph.add_edge("verifier", "scorer")
+    graph.add_conditional_edges(
+        "verifier",
+        after_verifier,
+        {"scorer": "scorer", "end": END},
+    )
 
     graph.add_conditional_edges(
         "scorer",

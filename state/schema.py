@@ -140,6 +140,7 @@ class OutreachState(TypedDict, total=False):
     user_prompt: str                # the raw natural-language request
     brief: SearchBrief              # structured plan from the Planner
     max_leads: int
+    skip_discovery: bool             # when True, finder is bypassed (e.g. --from-csv)
 
     # Stage 1 — Discovery
     raw_leads: Annotated[list[Lead], operator.add]

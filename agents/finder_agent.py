@@ -29,6 +29,15 @@ from prompts.templates import FINDER_EXTRACT_SYSTEM, FINDER_EXTRACT_USER
 
 def finder_agent(state: OutreachState) -> dict:
     """LangGraph node: discover real prospects from LinkedIn + web search."""
+    preloaded = state.get("raw_leads") or []
+    if state.get("skip_discovery") or preloaded:
+        log_agent(
+            "FinderAgent",
+            f"Skipping discovery — using {len(preloaded)} pre-loaded lead(s)",
+            "info",
+        )
+        return {"current_agent": "finder"}
+
     log_agent("FinderAgent", "🔎 Discovering real prospects (LinkedIn + web)...", "info")
 
     brief: SearchBrief = state.get("brief", {}) or {}

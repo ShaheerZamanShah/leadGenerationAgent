@@ -117,6 +117,7 @@ def main() -> None:
         "user_prompt": prompt or "",
         "brief": {},
         "max_leads": args.leads or settings.max_leads_per_run,
+        "skip_discovery": False,
         "raw_leads": [],
         "verified_leads": [],
         "scored_leads": [],
@@ -144,8 +145,8 @@ def main() -> None:
         leads = load_leads_from_csv(str(csv_path))
         console.print(f"[cyan]Loaded {len(leads)} leads from {csv_path}[/cyan]")
 
-        # Skip finder agent, inject directly into raw_leads
-        # The graph will still score/filter/research/write/review/send
+        # Skip finder — route planner → verifier with pre-loaded leads only
+        initial_state["skip_discovery"] = True
         initial_state["raw_leads"] = leads
 
     # ── Run the pipeline ──────────────────────────────────────────────────────
@@ -153,8 +154,6 @@ def main() -> None:
     console.print(f"[dim]Max leads: {initial_state['max_leads']} | Human review: {settings.human_in_loop}[/dim]\n")
 
     try:
-        # If CSV was provided, we need a version of the graph that starts at scorer
-        # Otherwise run full graph from START
         final_state = outreach_graph.invoke(
             initial_state,
             config={"configurable": {"thread_id": run_id}},
