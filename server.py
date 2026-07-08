@@ -4,8 +4,9 @@ server.py
 FastAPI backend for the Outreach Agent web app.
 
 Endpoints:
-  GET  /                      → serves frontend/index.html
-  GET  /frontend/<file>       → serves static frontend assets
+  GET  /                      → serves frontend/index.html (CSS inlined)
+  GET  /static/<file>         → serves static frontend assets
+  GET  /frontend/<file>       → legacy static asset route
   POST /api/start-campaign    → starts the agent pipeline
   GET  /api/stream/{run_id}   → SSE stream of live logs + results
   GET  /api/results/{run_id}  → full JSON results
@@ -25,6 +26,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 # ── Project imports ───────────────────────────────────────────────────────────
@@ -66,24 +68,56 @@ class CampaignRequest(BaseModel):
 # ── Static files ──────────────────────────────────────────────────────────────
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 FRONTEND_DIR.mkdir(exist_ok=True)
+_FRONTEND_ROOT = FRONTEND_DIR.resolve()
+
+_STATIC_MEDIA = {
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".html": "text/html; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+}
+
+
+def _safe_frontend_path(filename: str) -> Path | None:
+    """Resolve a frontend asset path and reject directory traversal."""
+    candidate = (_FRONTEND_ROOT / filename).resolve()
+    if not str(candidate).startswith(str(_FRONTEND_ROOT)):
+        return None
+    return candidate
+
+
+def _inject_stylesheet(html: str) -> str:
+    """Inline dashboard CSS so styling survives blocked/missed asset requests."""
+    css_file = FRONTEND_DIR / "styles.css"
+    if not css_file.exists() or "</head>" not in html:
+        return html
+    css = css_file.read_text(encoding="utf-8")
+    return html.replace("</head>", f'<style id="app-theme">{css}</style>\n</head>', 1)
+
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
     index_file = FRONTEND_DIR / "index.html"
     if index_file.exists():
         return HTMLResponse(
-            content=index_file.read_text(encoding="utf-8"),
+            content=_inject_stylesheet(index_file.read_text(encoding="utf-8")),
             headers={"Cache-Control": "no-cache"},
         )
     return HTMLResponse("<h1>Frontend not found</h1>", status_code=404)
 
-@app.get("/frontend/{filename:path}")
-async def serve_static(filename: str):
-    file_path = FRONTEND_DIR / filename
-    if file_path.exists():
+
+@app.api_route("/frontend/{filename:path}", methods=["GET", "HEAD"])
+async def serve_static_legacy(filename: str):
+    """Backward-compatible asset route used by older deployments/bookmarks."""
+    file_path = _safe_frontend_path(filename)
+    if file_path and file_path.is_file():
+        media_type = _STATIC_MEDIA.get(file_path.suffix.lower())
         return FileResponse(
             str(file_path),
-            headers={"Cache-Control": "no-cache"},
+            media_type=media_type,
+            headers={"Cache-Control": "public, max-age=3600"},
         )
     raise HTTPException(status_code=404, detail="File not found")
 
@@ -546,3 +580,7 @@ def _build_results_payload(state: dict, run_id: str) -> dict:
         },
         "leads": leads_out,
     }
+
+
+# Mount static assets last so /api routes keep priority.
+app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
