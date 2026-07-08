@@ -124,9 +124,10 @@ def is_domain_live(url_or_domain: str) -> bool:
         return False
 
     headers = {"User-Agent": "Mozilla/5.0 (compatible; OutreachAgent/3.0)"}
+    timeout = 6.0
     for method in ("head", "get"):
         try:
-            with httpx.Client(follow_redirects=True, timeout=8.0, verify=False) as client:
+            with httpx.Client(follow_redirects=True, timeout=timeout, verify=False) as client:
                 resp = getattr(client, method)(url, headers=headers)
                 if resp.status_code < 500:
                     return True

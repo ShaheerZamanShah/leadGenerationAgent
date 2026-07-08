@@ -320,14 +320,19 @@ function updateProgressFromAgent(agent, message) {
     setProgressStep(agentKey, pct, label, message);
   }
 
-  const discovered = message.match(/discovered (\d+) real prospects/i);
+  const discovered = message.match(/discovered (\d+) real prospects/i)
+    || message.match(/discovery complete:\s*(\d+)/i);
   const verified = message.match(/(\d+)\/(\d+) leads verified/i);
+  const verifiedAlt = message.match(/(\d+)\/(\d+) leads verified,\s*(\d+) partial/i);
   const qualified = message.match(/(\d+)\/(\d+) leads qualify/i);
   const generated = message.match(/generated (\d+) messages/i);
   if (discovered) updateStat('statDiscovered', parseInt(discovered[1], 10));
   if (verified) {
     updateStat('statDiscovered', parseInt(verified[2], 10));
     updateStat('statVerified', parseInt(verified[1], 10));
+  } else if (verifiedAlt) {
+    updateStat('statDiscovered', parseInt(verifiedAlt[2], 10));
+    updateStat('statVerified', parseInt(verifiedAlt[1], 10) + parseInt(verifiedAlt[3], 10));
   }
   if (qualified) updateStat('statQualified', parseInt(qualified[1], 10));
   if (generated) updateStat('statMessages', parseInt(generated[1], 10));
@@ -364,16 +369,20 @@ function handleResults(data) {
     .filter(Boolean);
 
   const s = data.stats || {};
-  updateStat('statDiscovered', s.discovered || allLeads.length);
-  updateStat('statVerified', s.verified != null ? s.verified : allLeads.length);
-  updateStat('statQualified', s.qualified || allLeads.length);
-  updateStat('statMessages', s.messages_generated || allMessages.length);
+  updateStat('statDiscovered', s.discovered ?? allLeads.length);
+  updateStat('statVerified', s.verified ?? 0);
+  updateStat('statQualified', s.qualified ?? 0);
+  updateStat('statMessages', s.messages_generated ?? allMessages.length);
   document.getElementById('leadsCount').textContent = String(allLeads.length);
   document.getElementById('messagesCount').textContent = String(allMessages.length);
 
   renderLeads(allLeads);
   renderMessages(allLeads);
   document.getElementById('exportBtn').disabled = !allLeads.length;
+
+  if (data.summary) {
+    appendLog({ agent: 'Pipeline', message: data.summary, status: data.end_reason === 'complete' ? 'done' : 'warn' });
+  }
 }
 
 // ── Render Leads ──────────────────────────────────────────────────────────
@@ -381,7 +390,8 @@ function renderLeads(leads) {
   const grid = document.getElementById('leadsGrid');
   grid.innerHTML = '';
   if (!leads.length) {
-    grid.innerHTML = '<div class="empty-state"><div class="empty-icon">🔍</div><div>No leads found</div></div>';
+    const hint = 'No leads to display yet. Check the Live Feed for agent progress or try a broader prompt.';
+    grid.innerHTML = `<div class="empty-state"><div class="empty-icon">🔍</div><div>No leads found</div><div style="margin-top:8px;font-size:12px;color:var(--text-dim)">${escHtml(hint)}</div></div>`;
     return;
   }
   leads.forEach((lead, idx) => {

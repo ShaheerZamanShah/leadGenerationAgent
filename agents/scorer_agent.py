@@ -66,11 +66,23 @@ def scorer_agent(state: OutreachState) -> dict:
             scored.append(_score_lead(lead, brief, use_llm=False))
 
     filtered = [l for l in scored if l.get("score", 0) >= threshold]
+    if not filtered and scored:
+        scored.sort(key=lambda x: x.get("score", 0), reverse=True)
+        floor = max(35, threshold - 25)
+        filtered = [l for l in scored if l.get("score", 0) >= floor]
+        if not filtered:
+            filtered = scored[: min(5, len(scored))]
+        log_agent(
+            "ScorerAgent",
+            f"No leads met threshold {threshold} — advancing top {len(filtered)} by score",
+            "warn",
+        )
+
     filtered.sort(key=lambda x: x.get("score", 0), reverse=True)
 
     log_agent(
         "ScorerAgent",
-        f"✓ Scored {len(scored)} leads → {len(filtered)} qualify (score ≥ {threshold})",
+        f"✓ Scored {len(scored)} leads — {len(filtered)}/{len(scored)} leads qualify (score ≥ {threshold})",
         "done",
     )
     return {
@@ -158,6 +170,14 @@ def _rule_based_score(lead: Lead, brief: SearchBrief) -> int:
         score += 15
     if lead.get("linkedin_url"):
         score += 10
+
+    verification = lead.get("verification") or {}
+    if verification.get("linkedin_valid"):
+        score += 12
+    if verification.get("domain_live"):
+        score += 10
+    if verification.get("email_valid"):
+        score += 8
 
     return min(score, 100)
 

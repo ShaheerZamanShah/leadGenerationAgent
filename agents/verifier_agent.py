@@ -42,9 +42,11 @@ _NON_COMPANY_DOMAINS = {
 
 
 def _discover_company_domain(company: str) -> str:
-    """Find a company's real, live website via web search."""
-    if not company or not settings.tavily_api_key:
+    """Find a company's real, live website via web search (budget-limited)."""
+    global _domain_lookups_used
+    if not company or not settings.tavily_api_key or _domain_lookups_used >= _DOMAIN_LOOKUP_BUDGET:
         return ""
+    _domain_lookups_used += 1
     results = search_tool.search_raw(f"{company} official website", max_results=5)
     for r in results:
         url = normalize_url(r.get("url", ""))
@@ -60,6 +62,11 @@ def _discover_company_domain(company: str) -> str:
     return ""
 
 
+# Cap expensive Tavily domain lookups during verification (Finder already searched)
+_DOMAIN_LOOKUP_BUDGET = 4
+_domain_lookups_used = 0
+
+
 def verifier_agent(state: OutreachState) -> dict:
     """LangGraph node: verify each raw lead and label it real/partial/unverified."""
     log_agent("VerifierAgent", "🛡️  Verifying leads (domains, emails, LinkedIn)...", "info")
@@ -70,13 +77,15 @@ def verifier_agent(state: OutreachState) -> dict:
         return {"verified_leads": []}
 
     verified: list[EnrichedLead] = []
-    with ThreadPoolExecutor(max_workers=6) as executor:
+    global _domain_lookups_used
+    _domain_lookups_used = 0
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {executor.submit(_verify_one, dict(lead)): lead for lead in raw_leads}
         for future in as_completed(futures):
+            original = futures[future]
             try:
-                verified.append(future.result())
+                verified.append(future.result(timeout=60))
             except Exception as e:
-                original = futures[future]
                 log_agent("VerifierAgent", f"Verify failed for {original.get('name')}: {e}", "warn")
                 verified.append({**original, "verified": False,
                                  "verification": {"status": "unverified", "confidence": 0}})
@@ -96,7 +105,7 @@ def verifier_agent(state: OutreachState) -> dict:
     n_partial = sum(1 for l in kept if l.get("verification", {}).get("status") == "partial")
     log_agent(
         "VerifierAgent",
-        f"✓ Verification complete: {n_verified} verified, {n_partial} partial of {len(kept)}",
+        f"✓ Verification complete: {n_verified}/{len(kept)} leads verified, {n_partial} partial",
         "done",
     )
     return {
@@ -118,7 +127,8 @@ def _verify_one(lead: dict) -> EnrichedLead:
                 lead[k] = v
 
     # ── Discover a real company website if we don't have one ─────────────────
-    if not lead.get("company_website") and lead.get("company"):
+    # Skip when LinkedIn is present — domain lookup is slow and Finder already searched.
+    if not lead.get("company_website") and lead.get("company") and not lead.get("linkedin_url"):
         found = _discover_company_domain(lead["company"])
         if found:
             lead["company_website"] = found

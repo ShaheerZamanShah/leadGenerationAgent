@@ -482,6 +482,29 @@ def _run_pipeline(run_id: str, req: CampaignRequest, q: queue.Queue, run_opts: d
             settings.max_leads_per_run = prev_max
         # If superseded, the newer run owns settings — do not clobber them.
 
+def _best_leads_list(state: dict) -> list[dict]:
+    """Return the most processed lead list available (not only researched)."""
+    for key in ("researched_leads", "filtered_leads", "scored_leads", "verified_leads", "raw_leads"):
+        leads = state.get(key) or []
+        if leads:
+            return list(leads)
+    return []
+
+
+def _pipeline_end_reason(state: dict) -> str:
+    if not state.get("raw_leads"):
+        return "no_prospects"
+    if not state.get("verified_leads"):
+        return "verification_empty"
+    if not state.get("filtered_leads"):
+        return "none_qualified"
+    if not state.get("researched_leads"):
+        return "research_incomplete"
+    if not (state.get("messages") or state.get("approved_messages")):
+        return "no_messages"
+    return "complete"
+
+
 def _build_results_payload(state: dict, run_id: str) -> dict:
     """Build a clean JSON payload from pipeline state for the frontend."""
     msg_map: dict[str, dict] = {}
@@ -496,7 +519,7 @@ def _build_results_payload(state: dict, run_id: str) -> dict:
             msg_map[lid] = msg
 
     leads_out = []
-    for lead in state.get("researched_leads", []):
+    for lead in _best_leads_list(state):
         lid = lead.get("id", "")
         msg = msg_map.get(lid, {})
 
@@ -557,12 +580,16 @@ def _build_results_payload(state: dict, run_id: str) -> dict:
             },
         })
 
+    verified_pool = state.get("verified_leads") or state.get("raw_leads") or []
     verified_count = sum(
-        1 for l in leads_out if l["verification"]["status"] in ("verified", "partial")
+        1 for l in verified_pool
+        if (l.get("verification") or {}).get("status") in ("verified", "partial")
     )
     brief = state.get("brief", {}) or {}
+    end_reason = _pipeline_end_reason(state)
     return {
         "run_id": run_id,
+        "end_reason": end_reason,
         "brief": {
             "goal": brief.get("goal", ""),
             "offering_summary": brief.get("offering_summary", ""),
@@ -577,9 +604,33 @@ def _build_results_payload(state: dict, run_id: str) -> dict:
             "researched": len(state.get("researched_leads", [])),
             "messages_generated": len(state.get("messages", [])),
             "approved": len(state.get("approved_messages", [])),
+            "scored": len(state.get("scored_leads", [])),
         },
         "leads": leads_out,
+        "summary": _results_summary(state, end_reason, verified_count),
     }
+
+
+def _results_summary(state: dict, end_reason: str, verified_count: int) -> str:
+    discovered = len(state.get("raw_leads") or [])
+    qualified = len(state.get("filtered_leads") or [])
+    messages = len(state.get("messages") or state.get("approved_messages") or [])
+    if end_reason == "complete":
+        return f"Campaign complete — {messages} message(s) for {qualified} qualified lead(s)."
+    if end_reason == "none_qualified":
+        return (
+            f"Found {discovered} prospect(s) and verified {verified_count}, "
+            f"but none scored high enough to qualify. Try a broader prompt or lower LEAD_SCORE_THRESHOLD."
+        )
+    if end_reason == "verification_empty":
+        return f"Found {discovered} prospect(s), but verification removed all of them."
+    if end_reason == "no_prospects":
+        return "No prospects matched your brief. Try a broader or more specific prompt."
+    if end_reason == "research_incomplete":
+        return f"{qualified} lead(s) qualified but research did not finish."
+    if end_reason == "no_messages":
+        return f"Research finished for {qualified} lead(s), but message generation did not complete."
+    return "Campaign finished with partial results."
 
 
 # Mount static assets last so /api routes keep priority.
