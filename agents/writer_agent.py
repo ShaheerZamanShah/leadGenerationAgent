@@ -55,9 +55,9 @@ def writer_agent(state: OutreachState) -> dict:
     for i, lead in enumerate(researched_leads):
         try:
             if use_llm:
-                msg = _generate_message(lead, writer_system)
+                msg = _generate_message(lead, writer_system, brief)
             else:
-                msg = _template_message(lead)
+                msg = _template_message(lead, brief)
             messages_out.append(msg)
             log_agent(
                 "WriterAgent",
@@ -67,8 +67,8 @@ def writer_agent(state: OutreachState) -> dict:
             )
         except RateLimitExhausted:
             use_llm = False
-            log_agent("WriterAgent", "LLM rate-limited — using template messages", "warn")
-            msg = _template_message(lead)
+            log_agent("WriterAgent", "LLM rate-limited — using brief-aware template messages", "warn")
+            msg = _template_message(lead, brief)
             messages_out.append(msg)
             log_agent(
                 "WriterAgent",
@@ -77,10 +77,10 @@ def writer_agent(state: OutreachState) -> dict:
             )
         except Exception as e:
             log_agent("WriterAgent", f"Message generation failed for {lead.get('name')}: {e}", "error")
-            messages_out.append(_template_message(lead))
+            messages_out.append(_template_message(lead, brief))
 
         if i < len(researched_leads) - 1 and use_llm:
-            time.sleep(0.6)
+            time.sleep(1.5 if settings.groq_prefer_fast else 0.6)
 
     log_agent("WriterAgent", f"✓ Generated {len(messages_out)} personalised messages", "done")
 
@@ -92,7 +92,7 @@ def writer_agent(state: OutreachState) -> dict:
     }
 
 
-def _generate_message(lead: EnrichedLead, writer_system: str) -> OutreachMessage:
+def _generate_message(lead: EnrichedLead, writer_system: str, brief: dict) -> OutreachMessage:
     """Generate a message for one lead via LLM (fast model preferred)."""
     channel = lead.get("best_channel") or "email"
     project_match = lead.get("_project_match", {}) or {}
@@ -144,7 +144,7 @@ def _generate_message(lead: EnrichedLead, writer_system: str) -> OutreachMessage
     subject = raw.get("subject") or f"Quick question about {lead.get('company', 'your business')}"
     body = raw.get("body") or ""
     if not body:
-        return _template_message(lead)
+        return _template_message(lead, brief)
 
     return {
         "lead_id": lead.get("id", new_id()),
@@ -160,29 +160,43 @@ def _generate_message(lead: EnrichedLead, writer_system: str) -> OutreachMessage
     }
 
 
-def _template_message(lead: EnrichedLead) -> OutreachMessage:
-    """Deterministic personalised message when LLM is unavailable."""
-    channel = lead.get("best_channel") or "email"
+def _template_message(lead: EnrichedLead, brief: dict | None = None) -> OutreachMessage:
+    """Personalised fallback when Groq is rate-limited — uses brief + lead intel, not generic CV blurbs."""
+    brief = brief or {}
+    channel = lead.get("best_channel") or ("email" if lead.get("email") else "linkedin")
     first = lead.get("first_name") or (lead.get("name", "").split()[0] if lead.get("name") else "there")
     company = lead.get("company") or "your company"
-    pain = (lead.get("pain_points") or ["manual processes slowing the team down"])[0]
-    project = (lead.get("_project_match") or {}).get("project_name") or lead.get("project_reference") or "NexusIQ"
+    title = lead.get("title") or "your role"
+    industry = lead.get("industry") or ""
+    pain = (lead.get("pain_points") or [brief.get("goal") or "manual workflows slowing the team"])[0]
+    pitch = (
+        lead.get("recommended_service")
+        or lead.get("fit_reason")
+        or brief.get("offering_summary")
+        or settings.default_offering_summary
+    )
+    project = (lead.get("_project_match") or {}).get("project_name") or lead.get("project_reference") or ""
+    if project and "sign language" in project.lower() and "support" in (brief.get("goal", "") + pitch).lower():
+        project = "RAG Customer Support Assistant"
+    proof = (lead.get("_project_match") or {}).get("proof_point") or "production-grade AI delivery"
     sender = settings.developer_first_name
+    company_line = f"{company}" + (f" ({industry})" if industry else "")
 
     if channel == "linkedin":
         subject = f"Quick note for {company}"
         body = (
-            f"Hi {first}, I came across {company} and noticed teams in your space often deal with {pain}. "
-            f"I've been building {project} to help with exactly that. "
-            f"Would you be open to a short chat?\n\nBest,\n{sender}"
+            f"Hi {first}, I came across your profile as {title} at {company_line}. "
+            f"Many teams in your space deal with {pain[:100]}. "
+            f"I build {pitch[:120]} — recently shipped {project or 'agentic AI systems'} ({proof}). "
+            f"Open to a short chat?\n\nBest,\n{sender}"
         )
     else:
-        subject = f"Quick question about {company}"
+        subject = f"Idea for {company}'s {pain[:40].strip() or 'workflow'}"
         body = (
             f"Hi {first},\n\n"
-            f"I came across {company} and thought it was worth a quick note. "
-            f"A lot of similar teams struggle with {pain}, and I've been helping them with {project}.\n\n"
-            f"Would you be open to a 15-minute call this week to see if there's a fit?\n\n"
+            f"I was researching {company_line} and noticed your team may be dealing with {pain[:120]}.\n\n"
+            f"I help with {pitch[:160]}. Relevant work: {project or 'LangGraph agent pipelines'} — {proof}.\n\n"
+            f"Would a 15-minute call this week make sense to see if there's a fit?\n\n"
             f"Best,\n{sender}\n{settings.developer_email}"
         )
 

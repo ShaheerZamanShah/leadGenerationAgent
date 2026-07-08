@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from state.schema import OutreachState, EnrichedLead
 from utils.helpers import log_agent
+from tools.enrichment import enrich_lead_record, normalize_lead_fields
 from tools.verification import (
     verify_lead, domain_from_url, guess_email_patterns,
     is_valid_email_syntax, has_mx_record, is_domain_live, normalize_url,
@@ -62,9 +63,10 @@ def _discover_company_domain(company: str) -> str:
     return ""
 
 
-# Cap expensive Tavily domain lookups during verification (Finder already searched)
-_DOMAIN_LOOKUP_BUDGET = 4
+# Cap expensive Tavily domain lookups during verification (Finder enriches first)
+_DOMAIN_LOOKUP_BUDGET = 10
 _domain_lookups_used = 0
+_seen_companies: set[str] = set()
 
 
 def verifier_agent(state: OutreachState) -> dict:
@@ -77,8 +79,9 @@ def verifier_agent(state: OutreachState) -> dict:
         return {"verified_leads": []}
 
     verified: list[EnrichedLead] = []
-    global _domain_lookups_used
+    global _domain_lookups_used, _seen_companies
     _domain_lookups_used = 0
+    _seen_companies = set()
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {executor.submit(_verify_one, dict(lead)): lead for lead in raw_leads}
         for future in as_completed(futures):
@@ -117,18 +120,29 @@ def verifier_agent(state: OutreachState) -> dict:
 
 def _verify_one(lead: dict) -> EnrichedLead:
     """Enrich (email) then verify a single lead."""
-    # ── Try Apollo enrichment when email/linkedin is missing ─────────────────
-    if apollo_enricher.available and (not lead.get("email") or not lead.get("linkedin_url")):
+    lead = normalize_lead_fields(lead)
+    lead = enrich_lead_record(lead, allow_tavily=_domain_lookups_used < _DOMAIN_LOOKUP_BUDGET)
+
+    # ── Try Apollo enrichment when email or key fields are missing ───────────
+    if apollo_enricher.available and (
+        not lead.get("email") or not lead.get("company_website") or not lead.get("title")
+    ):
         enrich = apollo_enricher.enrich_lead(
-            lead.get("name", ""), lead.get("company", ""), lead.get("company_website", "")
+            lead.get("name", ""),
+            lead.get("company", ""),
+            lead.get("company_website", ""),
+            linkedin_url=lead.get("linkedin_url", ""),
         )
         for k, v in enrich.items():
             if v and not lead.get(k):
                 lead[k] = v
+        if enrich:
+            lead = normalize_lead_fields(lead)
 
-    # ── Discover a real company website if we don't have one ─────────────────
-    # Skip when LinkedIn is present — domain lookup is slow and Finder already searched.
-    if not lead.get("company_website") and lead.get("company") and not lead.get("linkedin_url"):
+    # ── Discover company website (once per company name) ─────────────────────
+    company_key = (lead.get("company") or "").strip().lower()
+    if not lead.get("company_website") and company_key and company_key not in _seen_companies:
+        _seen_companies.add(company_key)
         found = _discover_company_domain(lead["company"])
         if found:
             lead["company_website"] = found

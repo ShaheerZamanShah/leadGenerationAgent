@@ -40,6 +40,7 @@ from utils.helpers import (
     remove_log_listener,
     set_active_campaign,
     get_active_campaign,
+    coerce_text,
 )
 
 app = FastAPI(title="Outreach Agent API", version="2.0.0")
@@ -538,19 +539,21 @@ def _build_results_payload(state: dict, run_id: str) -> dict:
             tech_stack = []
 
         verification = lead.get("verification", {}) or {}
+        email = coerce_text(lead.get("email"))
+        email_source = coerce_text(lead.get("email_source") or verification.get("email_source", ""))
         leads_out.append({
             "id": lid,
-            "name": lead.get("name", "") or "",
-            "first_name": lead.get("first_name", "") or "",
-            "title": lead.get("title", "") or "",
-            "company": lead.get("company", "") or "",
-            "company_website": lead.get("company_website", "") or "",
-            "linkedin_url": lead.get("linkedin_url", "") or "",
-            "email": lead.get("email", "") or "",
-            "email_source": lead.get("email_source", verification.get("email_source", "")) or "",
-            "location": lead.get("location", "") or "",
-            "industry": lead.get("industry", "") or "",
-            "company_size": lead.get("company_size", "") or "",
+            "name": coerce_text(lead.get("name")),
+            "first_name": coerce_text(lead.get("first_name")),
+            "title": coerce_text(lead.get("title")),
+            "company": coerce_text(lead.get("company")),
+            "company_website": coerce_text(lead.get("company_website")),
+            "linkedin_url": coerce_text(lead.get("linkedin_url")),
+            "email": email,
+            "email_source": email_source,
+            "location": coerce_text(lead.get("location")),
+            "industry": coerce_text(lead.get("industry")),
+            "company_size": coerce_text(lead.get("company_size")),
             "score": lead.get("score", 0) or 0,
             "verification": {
                 "status": verification.get("status", "unverified"),

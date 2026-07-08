@@ -44,6 +44,14 @@ class Settings:
     strict_verification: bool = field(default_factory=lambda: os.getenv("STRICT_VERIFICATION", "false").lower() == "true")
     smtp_probe: bool = field(default_factory=lambda: os.getenv("SMTP_PROBE", "false").lower() == "true")
 
+    # LLM reliability (critical on Groq free tier / Render)
+    groq_prefer_fast: bool = field(
+        default_factory=lambda: os.getenv("GROQ_PREFER_FAST", "true").lower() == "true"
+    )
+    llm_min_gap_sec: float = field(
+        default_factory=lambda: float(os.getenv("LLM_MIN_GAP_SEC", "2.0"))
+    )
+
     # Shaheer's profile
     developer_name: str = "Muhammad Shaheer Zaman Shah"
     developer_first_name: str = "Shaheer"

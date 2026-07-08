@@ -29,5 +29,9 @@ services:
         value: "false"
       - key: STRICT_VERIFICATION
         value: "false"
+      - key: GROQ_PREFER_FAST
+        value: "true"
+      - key: LLM_MIN_GAP_SEC
+        value: "2.0"
       - key: ENABLE_EMAIL_SENDING
         value: "false"

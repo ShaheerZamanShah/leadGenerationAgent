@@ -12,7 +12,7 @@ so the pipeline keeps working on Tavily-sourced leads alone.
 from __future__ import annotations
 import threading
 from typing import Optional
-from utils.helpers import log_agent, new_id
+from utils.helpers import log_agent, new_id, coerce_text
 
 try:
     from apify_client import ApifyClient
@@ -129,23 +129,43 @@ class LinkedInScraper:
         )
         if not name:
             return None
-        profile = item.get("profileUrl") or item.get("linkedinUrl") or item.get("url") or ""
-        company = item.get("companyName") or item.get("company") or ""
+
+        profile = (
+            item.get("profileUrl") or item.get("linkedinUrl") or item.get("url") or ""
+        )
+
+        # harvestapi / similar actors nest company + role under currentPosition(s)
+        company = coerce_text(item.get("companyName") or item.get("company") or "")
+        title = coerce_text(item.get("headline") or item.get("title") or item.get("occupation") or "")
+        positions = item.get("currentPositions") or item.get("currentPosition") or []
+        if isinstance(positions, dict):
+            positions = [positions]
+        if positions and isinstance(positions, list):
+            pos = positions[0] if positions else {}
+            if isinstance(pos, dict):
+                company = company or coerce_text(pos.get("companyName") or pos.get("company"))
+                title = title or coerce_text(pos.get("title") or pos.get("position"))
+
+        website = coerce_text(
+            item.get("companyWebsite") or item.get("companyUrl")
+            or item.get("companyWebsiteUrl") or ""
+        )
+
         return {
             "id": new_id(),
-            "name": name,
-            "first_name": item.get("firstName") or (name.split()[0] if name else ""),
-            "title": item.get("headline") or item.get("title") or item.get("occupation") or "",
+            "name": coerce_text(name),
+            "first_name": coerce_text(item.get("firstName") or (name.split()[0] if name else "")),
+            "title": title,
             "company": company,
-            "company_website": item.get("companyWebsite") or item.get("companyUrl") or "",
-            "linkedin_url": profile,
-            "email": item.get("email") or "",
-            "location": item.get("location") or item.get("addressWithCountry") or "",
-            "industry": item.get("industry") or "",
-            "company_size": str(item.get("companySize") or ""),
+            "company_website": website,
+            "linkedin_url": coerce_text(profile),
+            "email": coerce_text(item.get("email") or ""),
+            "location": coerce_text(item.get("location") or item.get("addressWithCountry") or item.get("geo") or ""),
+            "industry": coerce_text(item.get("industry") or item.get("companyIndustry") or ""),
+            "company_size": coerce_text(item.get("companySize") or item.get("employeeCount") or ""),
             "source": "apify",
-            "source_url": profile,
-            "snippet": item.get("summary") or item.get("about") or "",
+            "source_url": coerce_text(profile),
+            "snippet": coerce_text(item.get("summary") or item.get("about") or item.get("headline") or "")[:400],
         }
 
 
@@ -161,7 +181,13 @@ class ApolloEnricher:
         self.api_key = settings.apollo_api_key
         self.available = bool(self.api_key)
 
-    def enrich_lead(self, name: str, company: str, domain: str = "") -> dict:
+    def enrich_lead(
+        self,
+        name: str,
+        company: str,
+        domain: str = "",
+        linkedin_url: str = "",
+    ) -> dict:
         """Find email + enrichment for a person. Returns {} if unavailable."""
         if not self.available:
             return {}
@@ -173,6 +199,16 @@ class ApolloEnricher:
         clean_domain = (
             domain.replace("https://", "").replace("http://", "").rstrip("/")
         )
+        payload: dict = {
+            "first_name": first,
+            "last_name": last,
+            "organization_name": company,
+            "reveal_personal_emails": False,
+        }
+        if clean_domain:
+            payload["domain"] = clean_domain
+        if linkedin_url:
+            payload["linkedin_url"] = linkedin_url
         try:
             resp = httpx.post(
                 f"{self.BASE_URL}/people/match",
@@ -181,13 +217,7 @@ class ApolloEnricher:
                     "Cache-Control": "no-cache",
                     "x-api-key": self.api_key,
                 },
-                json={
-                    "first_name": first,
-                    "last_name": last,
-                    "organization_name": company,
-                    "domain": clean_domain,
-                    "reveal_personal_emails": False,
-                },
+                json=payload,
                 timeout=12,
             )
             if resp.status_code == 200:
@@ -198,8 +228,17 @@ class ApolloEnricher:
                     "email_source": "apollo" if data.get("email") else "",
                     "linkedin_url": data.get("linkedin_url", "") or "",
                     "title": data.get("title", "") or "",
+                    "company": (org.get("name", "") or company or ""),
                     "company_website": org.get("website_url", "") or "",
                     "company_size": str(org.get("estimated_num_employees", "") or ""),
+                    "industry": org.get("industry", "") or "",
+                    "location": ", ".join(
+                        x for x in [
+                            data.get("city", ""),
+                            data.get("state", ""),
+                            data.get("country", ""),
+                        ] if x
+                    ),
                 }
         except Exception as e:
             log_agent("ApolloEnricher", f"Enrichment failed for {name}: {e}", "warn")

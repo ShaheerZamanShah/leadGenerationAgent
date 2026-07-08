@@ -23,6 +23,7 @@ from utils.llm import invoke_smart_or_fast
 from tools.scraper import linkedin_scraper
 from tools.search import search_tool
 from tools.verification import is_valid_linkedin, normalize_url, domain_from_url
+from tools.enrichment import enrich_leads_batch, normalize_lead_fields
 from config.settings import settings
 from prompts.templates import FINDER_EXTRACT_SYSTEM, FINDER_EXTRACT_USER
 
@@ -58,15 +59,23 @@ def finder_agent(state: OutreachState) -> dict:
         except Exception as e:
             log_agent("FinderAgent", f"Apify search skipped: {e}", "warn")
 
-    # ── Step 2: Tavily web search + real-lead extraction ─────────────────────
-    if settings.tavily_api_key and len(all_leads) < max_leads:
-        need = max_leads - len(all_leads)
-        web_leads = _find_leads_via_web_search(brief, count=need)
-        log_agent("FinderAgent", f"Web search: extracted {len(web_leads)} real leads", "done")
-        all_leads.extend(web_leads)
+    # ── Step 2: Tavily web search — always run to supplement AND diversify ───
+    # Apify alone often returns sparse LinkedIn rows (no email/website). Tavily
+    # adds company pages and extra profiles even when Apify already hit max_leads.
+    if settings.tavily_api_key:
+        need = max(0, max_leads - len(all_leads))
+        if need > 0:
+            web_leads = _find_leads_via_web_search(brief, count=need)
+            log_agent("FinderAgent", f"Web search: extracted {len(web_leads)} real leads", "done")
+            all_leads.extend(web_leads)
+        else:
+            log_agent("FinderAgent", "Apify filled quota — running Tavily merge pass for enrichment", "info")
 
-    # ── Step 3: Deduplicate + clean ──────────────────────────────────────────
+    # ── Step 3: Deduplicate, enrich sparse rows, cap ─────────────────────────
     unique = _dedupe(all_leads)[:max_leads]
+    if settings.tavily_api_key and unique:
+        unique = enrich_leads_batch(unique, max_tavily_lookups=min(8, len(unique)))
+        log_agent("FinderAgent", "Tavily enrichment pass complete", "info")
 
     if not unique:
         log_agent(
@@ -263,7 +272,7 @@ def _sanitize_extracted(item: dict) -> Lead | None:
         return None
 
     first = (item.get("first_name") or (name.split()[0] if name else "")).strip()
-    return {
+    lead = {
         "id": new_id(),
         "name": name or company,
         "first_name": first,
@@ -275,10 +284,11 @@ def _sanitize_extracted(item: dict) -> Lead | None:
         "location": (item.get("location") or "").strip(),
         "industry": (item.get("industry") or "").strip(),
         "company_size": str(item.get("company_size") or "").strip(),
-        "source": "tavily",
+        "source": item.get("source") or "tavily",
         "source_url": (item.get("source_url") or "").strip(),
         "snippet": (item.get("snippet") or "").strip()[:400],
     }
+    return normalize_lead_fields(lead)
 
 
 def _dedupe(leads: list[Lead]) -> list[Lead]:

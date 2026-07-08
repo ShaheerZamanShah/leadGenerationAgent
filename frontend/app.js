@@ -732,6 +732,9 @@ function updateStat(id, val) {
 }
 function escHtml(s) {
   if (s == null) return '';
+  if (typeof s === 'object') {
+    try { s = JSON.stringify(s); } catch { s = String(s); }
+  }
   return String(s)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

@@ -59,6 +59,30 @@ def clear_all_log_listeners() -> None:
         _active_campaign_id = None
 
 
+def coerce_text(value: Any, *, join: str = ", ") -> str:
+    """Turn Apify/Tavily nested values into a display-safe string."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key in (
+            "linkedinText", "default", "full", "name", "city", "country",
+            "countryCode", "region", "localizedName", "text", "value",
+        ):
+            if value.get(key):
+                parts.append(coerce_text(value[key], join=join))
+        if not parts:
+            parts = [coerce_text(v, join=join) for v in value.values() if v]
+        return join.join(p for p in parts if p)
+    if isinstance(value, list):
+        return join.join(coerce_text(v, join=join) for v in value if v)
+    return str(value).strip()
+
+
 def new_id() -> str:
     return str(uuid.uuid4())[:8]
 

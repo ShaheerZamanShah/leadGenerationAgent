@@ -97,7 +97,7 @@ class SearchTool:
             queries.append(f"site:{website.replace('https://', '').replace('http://', '')} about")
 
         results = []
-        for q in queries[:3]:  # Limit to 3 queries per company to save API credits
+        for q in queries[:2]:  # Limit Tavily credits per company on free tier
             result = self.search(q, max_results=3)
             results.append(f"Query: {q}\n{result}")
 

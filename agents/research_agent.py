@@ -63,9 +63,9 @@ def research_agent(state: OutreachState) -> dict:
             )
             researched.append(_heuristic_research(lead, brief))
 
-        # Small pause between leads to stay under TPM
+    # Small pause between leads to stay under TPM
         if i < len(filtered_leads) - 1:
-            time.sleep(0.8)
+            time.sleep(1.2 if settings.groq_prefer_fast else 0.8)
 
     log_agent("ResearchAgent", f"✓ Research complete: {len(researched)} leads enriched", "done")
 
@@ -130,7 +130,8 @@ def _research_lead(lead: EnrichedLead, brief: dict) -> EnrichedLead:
 
     # Heuristic project match — avoids a second LLM call per lead
     project_match = _match_project_heuristic(
-        pain_points, industry, brief.get("offering", settings.default_offering)
+        pain_points, industry, brief.get("offering", settings.default_offering),
+        goal=brief.get("goal", ""),
     )
 
     enriched: EnrichedLead = {
@@ -153,24 +154,29 @@ def _heuristic_research(lead: EnrichedLead, brief: dict, search_results: str = "
     company = lead.get("company", "") or "the company"
     industry = lead.get("industry", "") or "technology"
     title = lead.get("title", "") or "decision-maker"
+    goal = brief.get("goal", "") or ""
     offering = brief.get("offering_summary", settings.default_offering_summary)
+    snippet = lead.get("snippet", "") or ""
 
-    pain_points = [
-        f"Manual processes slowing {industry} operations",
-        f"Need for scalable automation as {company} grows",
-    ]
-    # Pull a couple of phrases from search snippets if present
-    if search_results:
-        for m in re.finditer(r"(?:challenge|struggle|need|looking for|pain)[^.!?\n]{10,80}", search_results, re.I):
-            pain_points.append(m.group(0).strip())
-            if len(pain_points) >= 3:
-                break
+    pain_points = []
+    if goal:
+        pain_points.append(f"Teams like {company} often struggle with goals around: {goal[:120]}")
+    if snippet:
+        pain_points.append(snippet[:140])
+    if not pain_points:
+        pain_points = [
+            f"Manual workflows slowing {company}",
+            f"Need for practical AI automation in {industry or 'their'} operations",
+        ]
 
     opportunities = [
-        f"Help {title} at {company} automate repetitive workflows",
-        f"Apply AI to improve {industry} efficiency",
+        f"Help {title} at {company} automate repetitive workflows with AI",
+        f"Apply {offering[:80]} to their current bottlenecks",
     ]
-    project_match = _match_project_heuristic(pain_points, industry, offering)
+    project_match = _match_project_heuristic(
+        pain_points, industry, brief.get("offering", settings.default_offering),
+        goal=goal,
+    )
 
     return {
         **lead,
@@ -185,8 +191,14 @@ def _heuristic_research(lead: EnrichedLead, brief: dict, search_results: str = "
     }
 
 
-def _match_project_heuristic(pain_points: list[str], industry: str, offering: str) -> dict:
-    """Pick the best project from settings without an LLM call."""
+def _match_project_heuristic(
+    pain_points: list[str],
+    industry: str,
+    offering: str,
+    *,
+    goal: str = "",
+) -> dict:
+    """Pick the best project from settings — aligned to campaign brief, not random CV entries."""
     projects = settings.projects or []
     if not projects:
         return {
@@ -196,17 +208,26 @@ def _match_project_heuristic(pain_points: list[str], industry: str, offering: st
             "proof_point": "Proven, production-grade delivery",
         }
 
-    blob = " ".join(pain_points + [industry or "", offering or ""]).lower()
+    blob = " ".join(pain_points + [industry or "", offering or "", goal or ""]).lower()
+    brief_blob = f"{goal} {offering}".lower()
+
     best = projects[0]
     best_score = -1
     for p in projects:
         score = 0
-        for kw in p.get("best_for", []):
-            if kw.lower() in blob:
-                score += 2
         name = (p.get("name") or "").lower()
-        if name and name in blob:
-            score += 1
+        for kw in p.get("best_for", []):
+            kw_l = kw.lower()
+            if kw_l in blob:
+                score += 2
+            if kw_l in brief_blob:
+                score += 5
+        if name and name in brief_blob:
+            score += 3
+        desc = (p.get("description") or "").lower()
+        for token in re.findall(r"[a-z]{4,}", brief_blob):
+            if token in desc:
+                score += 1
         if score > best_score:
             best_score = score
             best = p

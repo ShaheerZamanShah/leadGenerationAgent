@@ -22,7 +22,6 @@ from config.settings import settings
 # Serialize LLM calls so parallel research/scoring cannot stampede the API.
 _llm_lock = threading.Lock()
 _last_call_at = 0.0
-_MIN_GAP_SEC = 1.2  # soft spacing between calls (helps TPM)
 
 # After a hard daily-limit hit on a model, skip it for a while.
 _model_cooldown_until: dict[str, float] = {}
@@ -124,11 +123,15 @@ def smart_llm(temperature: float = 0.4) -> ChatGroq:
     return get_llm(settings.smart_model, temperature)
 
 
+def _min_gap() -> float:
+    return max(0.5, settings.llm_min_gap_sec)
+
+
 def _throttle() -> None:
     global _last_call_at
     with _llm_lock:
         now = time.time()
-        gap = _MIN_GAP_SEC - (now - _last_call_at)
+        gap = _min_gap() - (now - _last_call_at)
         if gap > 0:
             time.sleep(gap)
         _last_call_at = time.time()
@@ -214,7 +217,7 @@ def invoke_smart_or_fast(
     errors: list[str] = []
 
     order = []
-    if prefer_fast or _is_cooling_down(settings.smart_model):
+    if prefer_fast or settings.groq_prefer_fast or _is_cooling_down(settings.smart_model):
         order = [("fast", fast_llm(temperature))]
     else:
         order = [
