@@ -1,0 +1,16 @@
+services:
+  outreach-agent:
+    build: .
+    image: research-outreach-agent:latest
+    container_name: outreach-agent
+    ports:
+      - "8080:8000"
+    env_file:
+      - .env
+    environment:
+      - PORT=8000
+      - OPEN_BROWSER=0
+    volumes:
+      # Persist campaign outputs on the host
+      - ./data/output:/app/data/output
+    restart: unless-stopped

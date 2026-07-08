@@ -58,15 +58,22 @@ def _save_leads_csv(state: OutreachState, path: Path) -> None:
 
     fieldnames = [
         "name", "title", "company", "industry", "company_size",
-        "location", "email", "linkedin_url", "score",
-        "recommended_service", "best_channel", "pain_points",
+        "location", "email", "linkedin_url", "company_website", "score",
+        "verification_status", "verification_confidence",
+        "recommended_service", "best_channel", "source", "source_url", "pain_points",
     ]
 
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for lead in researched:
-            row = {**lead, "pain_points": "; ".join(lead.get("pain_points", [])[:3])}
+            verification = lead.get("verification", {}) or {}
+            row = {
+                **lead,
+                "pain_points": "; ".join(lead.get("pain_points", [])[:3]),
+                "verification_status": verification.get("status", ""),
+                "verification_confidence": verification.get("confidence", ""),
+            }
             writer.writerow({k: row.get(k, "") for k in fieldnames})
 
 
@@ -115,6 +122,11 @@ def _save_json_dump(state: OutreachState, path: Path) -> None:
 
 def _print_summary(state: OutreachState, output_dir: Path) -> None:
     raw = len(state.get("raw_leads", []))
+    verified_leads = state.get("verified_leads", [])
+    verified = sum(
+        1 for l in verified_leads
+        if l.get("verification", {}).get("status") in ("verified", "partial")
+    )
     qualified = len(state.get("filtered_leads", []))
     researched = len(state.get("researched_leads", []))
     generated = len(state.get("messages", []))
@@ -127,6 +139,7 @@ def _print_summary(state: OutreachState, output_dir: Path) -> None:
     table.add_column("Count", style="bold white", justify="right")
 
     table.add_row("Prospects discovered", str(raw))
+    table.add_row("Verified real leads", str(verified))
     table.add_row("Qualified leads (≥ score threshold)", str(qualified))
     table.add_row("Leads researched", str(researched))
     table.add_row("Messages generated", str(generated))

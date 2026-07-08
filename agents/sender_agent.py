@@ -45,7 +45,7 @@ def sender_agent(state: OutreachState) -> dict:
 
     for msg in approved:
         lead = researched_leads.get(msg.get("lead_id"), {})
-        channel = msg.get("channel", "email")
+        channel = msg.get("channel") or "email"
 
         if channel == "email":
             result = _send_email(msg, lead)
@@ -81,11 +81,13 @@ def _send_email(msg: OutreachMessage, lead: dict) -> dict:
         log_agent("SenderAgent", f"No email for {lead.get('name')} — skipping", "warn")
         return {"success": False, "error": "No email address found"}
 
+    # Only send for real when explicitly enabled AND Gmail is configured.
+    live_send = settings.enable_email_sending and gmail_sender.available
     success, status = gmail_sender.send(
         to=to_email,
         subject=msg.get("subject", ""),
         body=msg.get("body", ""),
-        dry_run=not gmail_sender.available,  # Dry run if Gmail not configured
+        dry_run=not live_send,
     )
 
     if success:

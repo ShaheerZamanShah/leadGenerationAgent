@@ -7,6 +7,7 @@
   <meta name="description" content="AI-powered B2B lead discovery and personalised outreach by Muhammad Shaheer Zaman Shah, Agentic AI Developer." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%236378ff'/%3E%3Ctext x='50' y='68' font-size='52' font-family='Arial' font-weight='800' text-anchor='middle' fill='white'%3ESZ%3C/text%3E%3C/svg%3E" />
   <link rel="stylesheet" href="/frontend/styles.css" />
 </head>
 <body>
@@ -33,33 +34,39 @@
     <div class="hero-content">
       <div class="hero-glow"></div>
       <h1 class="hero-title">
-        Find Your <span class="gradient-text">Perfect Clients</span>
-        <br />with Agentic AI
+        Describe your ideal client.
+        <br /><span class="gradient-text">The agents find &amp; verify them.</span>
       </h1>
       <p class="hero-sub">
-        The agent researches the web &amp; LinkedIn, discovers decision-makers who need your AI services,
-        and crafts personalized outreach messages — all automatically.
+        Type what you're looking for in plain English. A multi-agent pipeline plans the search,
+        discovers <strong>real</strong> people &amp; companies, verifies their websites, emails and
+        LinkedIn, then writes personalized outreach for each one.
       </p>
+
+      <div class="prompt-box">
+        <label class="prompt-label">🎯 Who do you want to reach?</label>
+        <textarea id="promptInput" class="prompt-input" rows="3"
+          placeholder="e.g. Find founders and CTOs at 10–100 person SaaS startups in the UK & Europe that struggle with customer support, so I can offer them AI chatbots."></textarea>
+        <div class="prompt-examples" id="promptExamples">
+          <span class="ex-label">Try:</span>
+          <button class="ex-chip" type="button">SaaS founders in Europe who need AI customer support</button>
+          <button class="ex-chip" type="button">E-commerce brands doing $1M+ that need inventory automation</button>
+          <button class="ex-chip" type="button">Marketing agencies that want to automate content creation</button>
+        </div>
+      </div>
+
       <div class="config-row">
         <div class="config-item">
-          <label>Lead Count</label>
+          <label>Number of leads</label>
           <div class="slider-wrap">
-            <input type="range" id="leadCount" min="5" max="20" value="18" />
-            <span id="leadCountVal">18</span>
-          </div>
-        </div>
-        <div class="config-item">
-          <label>Target Channel</label>
-          <div class="channel-pills">
-            <button class="pill active" data-channel="email">Email</button>
-            <button class="pill active" data-channel="linkedin">LinkedIn</button>
-            <button class="pill active" data-channel="reddit">Reddit</button>
+            <input type="range" id="leadCount" min="3" max="20" value="10" />
+            <span id="leadCountVal">10</span>
           </div>
         </div>
       </div>
       <button id="startBtn" class="start-btn" onclick="startCampaign()">
         <span class="start-icon">⚡</span>
-        <span id="startBtnText">Start AI Research Campaign</span>
+        <span id="startBtnText">Launch Research Campaign</span>
         <div class="btn-shimmer"></div>
       </button>
     </div>
@@ -75,12 +82,12 @@
         <div class="stat-label">Discovered</div>
       </div>
       <div class="stat-card">
-        <div class="stat-num" id="statQualified">0</div>
-        <div class="stat-label">Qualified</div>
+        <div class="stat-num" id="statVerified">0</div>
+        <div class="stat-label">Verified</div>
       </div>
       <div class="stat-card">
-        <div class="stat-num" id="statResearched">0</div>
-        <div class="stat-label">Researched</div>
+        <div class="stat-num" id="statQualified">0</div>
+        <div class="stat-label">Qualified</div>
       </div>
       <div class="stat-card">
         <div class="stat-num" id="statMessages">0</div>
@@ -145,11 +152,12 @@
         <div class="progress-bar" id="progressBar" style="width:5%"></div>
       </div>
       <div class="progress-steps">
-        <div class="step" id="step-finder">🔍 Finder</div>
-        <div class="step" id="step-scorer">📊 Scorer</div>
+        <div class="step" id="step-planner">🧭 Plan</div>
+        <div class="step" id="step-finder">🔍 Find</div>
+        <div class="step" id="step-verifier">🛡 Verify</div>
+        <div class="step" id="step-scorer">📊 Score</div>
         <div class="step" id="step-research">🔬 Research</div>
-        <div class="step" id="step-writer">✍ Writer</div>
-        <div class="step" id="step-sender">📤 Sender</div>
+        <div class="step" id="step-writer">✍ Write</div>
       </div>
     </div>
   </div>

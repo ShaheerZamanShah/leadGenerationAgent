@@ -1,13 +1,21 @@
 """
 pipeline.py
 -----------
-The main LangGraph StateGraph pipeline wiring all 6 agents.
+The main LangGraph StateGraph pipeline wiring all agents.
 
 Graph flow:
   START
     │
     ▼
-  finder_agent        — discovers prospects
+  planner_agent       — prompt → structured campaign brief
+    │
+    ▼
+  finder_agent        — discovers REAL prospects (LinkedIn + web)
+    │
+    ├── [no leads] → END
+    │
+    ▼
+  verifier_agent      — verifies domains, emails, LinkedIn (real check)
     │
     ▼
   scorer_agent        — qualifies & filters leads (0-100 score)
@@ -21,12 +29,12 @@ Graph flow:
   writer_agent        — generates personalised messages
     │
     ▼
-  review_agent        — human-in-loop approval ← INTERRUPT POINT
+  review_agent        — human-in-loop approval (auto in web mode)
     │
     ├── [nothing approved] → END
     │
     ▼
-  sender_agent        — dispatches approved messages
+  sender_agent        — dispatches / prepares approved messages
     │
     ▼
   END
@@ -36,7 +44,9 @@ from __future__ import annotations
 from langgraph.graph import StateGraph, START, END
 from state.schema import OutreachState
 from agents import (
+    planner_agent,
     finder_agent,
+    verifier_agent,
     scorer_agent,
     research_agent,
     writer_agent,
@@ -47,6 +57,14 @@ from utils.helpers import log_agent
 
 
 # ─── Conditional edges ───────────────────────────────────────────────────────
+
+def after_finder(state: OutreachState) -> str:
+    """Route: if no prospects discovered, end early."""
+    if not state.get("raw_leads"):
+        log_agent("Pipeline", "No prospects discovered — ending pipeline", "warn")
+        return "end"
+    return "verifier"
+
 
 def after_scorer(state: OutreachState) -> str:
     """Route: if no qualified leads, end early."""
@@ -66,24 +84,29 @@ def after_review(state: OutreachState) -> str:
 
 # ─── Graph construction ───────────────────────────────────────────────────────
 
-def build_graph() -> StateGraph:
-    """
-    Construct and compile the LangGraph StateGraph.
-    Returns a compiled graph ready for invocation.
-    """
+def build_graph():
+    """Construct and compile the LangGraph StateGraph."""
     graph = StateGraph(OutreachState)
 
-    # Register nodes (each agent = one node)
+    graph.add_node("planner", planner_agent)
     graph.add_node("finder", finder_agent)
+    graph.add_node("verifier", verifier_agent)
     graph.add_node("scorer", scorer_agent)
     graph.add_node("research", research_agent)
     graph.add_node("writer", writer_agent)
     graph.add_node("review", review_agent)
     graph.add_node("sender", sender_agent)
 
-    # Edges (linear flow with conditional branches)
-    graph.add_edge(START, "finder")
-    graph.add_edge("finder", "scorer")
+    graph.add_edge(START, "planner")
+    graph.add_edge("planner", "finder")
+
+    graph.add_conditional_edges(
+        "finder",
+        after_finder,
+        {"verifier": "verifier", "end": END},
+    )
+
+    graph.add_edge("verifier", "scorer")
 
     graph.add_conditional_edges(
         "scorer",

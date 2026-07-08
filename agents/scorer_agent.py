@@ -1,72 +1,61 @@
 """
 agents/scorer_agent.py
 ----------------------
-Agent 2 — Lead Qualification & Scoring
+Agent 3 — Lead Qualification & Scoring
 
-Scores each raw lead 0-100 based on:
-  - Decision-making authority (30%)
-  - Industry AI-readiness (25%)
-  - Company size fit (20%)
-  - Pain point likelihood (25%)
+Scores each verified lead 0-100 for fit against the campaign brief:
+  - Decision-making authority
+  - Fit with target industry & goal
+  - Company size fit
+  - Likelihood they need the offering
 
+A verification bonus rewards leads we could actually confirm are real.
 Filters out leads below LEAD_SCORE_THRESHOLD.
-Uses the fast model for cost efficiency (scoring is classification, not generation).
 """
 
 from __future__ import annotations
 from langchain_core.messages import SystemMessage, HumanMessage
-from state.schema import OutreachState, Lead, EnrichedLead
-from utils.helpers import log_agent, safe_json_parse, now_iso
-from utils.llm import fast_llm
+from state.schema import OutreachState, Lead, EnrichedLead, SearchBrief
+from utils.helpers import log_agent, safe_json_parse
+from utils.llm import invoke_smart_or_fast, RateLimitExhausted
 from config.settings import settings
 from prompts.templates import SCORER_SYSTEM, SCORER_USER
 
 
-# Industry AI-readiness tiers (pre-computed for scoring boost)
-HIGH_READINESS_INDUSTRIES = {
-    "saas", "e-commerce", "ecommerce", "fintech", "healthcare", "logistics",
-    "real estate", "proptech", "hr tech", "hrtech", "legaltech", "legal tech",
-    "marketing", "media", "edtech", "insurtech",
-}
-
-# Role authority tiers
 AUTHORITY_TIERS = {
-    "tier1": {"founder", "co-founder", "ceo", "chief executive", "owner"},
-    "tier2": {"cto", "coo", "chief technology", "chief operating", "vp", "vice president"},
-    "tier3": {"director", "head of", "manager", "lead"},
+    "tier1": {"founder", "co-founder", "ceo", "chief executive", "owner", "president"},
+    "tier2": {"cto", "coo", "cfo", "cmo", "chief", "vp", "vice president", "director"},
+    "tier3": {"head of", "manager", "lead", "principal"},
 }
-
-# Ideal company size range
-IDEAL_SIZE_KEYWORDS = {"10-50", "11-50", "50-200", "51-200", "1-10", "10-100"}
+IDEAL_SIZE_KEYWORDS = {"1-10", "10-50", "11-50", "50-200", "51-200", "10-100", "1-50"}
 
 
 def scorer_agent(state: OutreachState) -> dict:
-    """
-    LangGraph node: scores all raw_leads and filters below threshold.
-    Runs LLM scoring for nuanced qualification.
-    """
-    log_agent("ScorerAgent", "📊 Scoring and qualifying leads...", "info")
+    """LangGraph node: score verified leads and filter below threshold."""
+    log_agent("ScorerAgent", "📊 Scoring & qualifying leads...", "info")
 
-    raw_leads = state.get("raw_leads", [])
-    if not raw_leads:
+    leads = state.get("verified_leads", []) or state.get("raw_leads", [])
+    if not leads:
         log_agent("ScorerAgent", "No leads to score", "warn")
         return {"filtered_leads": [], "scored_leads": []}
 
-    llm = fast_llm(temperature=0.1)
-    scored: list[EnrichedLead] = []
+    brief: SearchBrief = state.get("brief", {}) or {}
     threshold = settings.lead_score_threshold
+    scored: list[EnrichedLead] = []
+    use_llm = True
 
-    for lead in raw_leads:
+    for lead in leads:
         try:
-            enriched = _score_lead(lead, llm)
-            scored.append(enriched)
+            scored.append(_score_lead(lead, brief, use_llm=use_llm))
+        except RateLimitExhausted:
+            use_llm = False
+            log_agent("ScorerAgent", "LLM rate-limited — switching to rule-based scoring", "warn")
+            scored.append(_score_lead(lead, brief, use_llm=False))
         except Exception as e:
             log_agent("ScorerAgent", f"Scoring failed for {lead.get('name')}: {e}", "warn")
+            scored.append(_score_lead(lead, brief, use_llm=False))
 
-    # Filter by threshold
     filtered = [l for l in scored if l.get("score", 0) >= threshold]
-
-    # Sort by score descending
     filtered.sort(key=lambda x: x.get("score", 0), reverse=True)
 
     log_agent(
@@ -74,7 +63,6 @@ def scorer_agent(state: OutreachState) -> dict:
         f"✓ Scored {len(scored)} leads → {len(filtered)} qualify (score ≥ {threshold})",
         "done",
     )
-
     return {
         "scored_leads": scored,
         "filtered_leads": filtered,
@@ -83,84 +71,81 @@ def scorer_agent(state: OutreachState) -> dict:
     }
 
 
-def _score_lead(lead: Lead, llm) -> EnrichedLead:
-    """
-    Score a single lead using a combination of:
-    1. Rule-based pre-scoring (fast, deterministic)
-    2. LLM semantic scoring (nuanced, handles edge cases)
-    Final score = weighted average of both.
-    """
-    # ── Rule-based pre-score ─────────────────────────────────────────────────
-    rule_score = _rule_based_score(lead)
+def _score_lead(lead: Lead, brief: SearchBrief, *, use_llm: bool = True) -> EnrichedLead:
+    rule_score = _rule_based_score(lead, brief)
+    llm_data: dict = {}
+    llm_score = rule_score
 
-    # ── LLM scoring ─────────────────────────────────────────────────────────
-    prompt = SCORER_USER.format(
-        name=lead.get("name", "Unknown"),
-        title=lead.get("title", "Unknown"),
-        company=lead.get("company", "Unknown"),
-        industry=lead.get("industry", "Unknown"),
-        company_size=lead.get("company_size", "Unknown"),
-        location=lead.get("location", "Unknown"),
-    )
+    if use_llm:
+        prompt = SCORER_USER.format(
+            goal=brief.get("goal", ""),
+            offering_summary=brief.get("offering_summary", settings.default_offering_summary),
+            roles=", ".join(brief.get("target_roles", [])),
+            industries=", ".join(brief.get("target_industries", [])),
+            name=lead.get("name", "Unknown"),
+            title=lead.get("title", "Unknown"),
+            company=lead.get("company", "Unknown"),
+            industry=lead.get("industry", "Unknown"),
+            company_size=lead.get("company_size", "Unknown"),
+            location=lead.get("location", "Unknown"),
+            snippet=(lead.get("snippet", "") or "")[:300],
+        )
+        response = invoke_smart_or_fast(
+            [
+                SystemMessage(content=SCORER_SYSTEM),
+                HumanMessage(content=prompt),
+            ],
+            temperature=0.1,
+            label="ScorerAgent",
+            prefer_fast=True,
+        )
+        llm_data = safe_json_parse(response.content, fallback={}) or {}
+        llm_score = int(llm_data.get("score", rule_score) or rule_score)
 
-    messages = [
-        SystemMessage(content=SCORER_SYSTEM),
-        HumanMessage(content=prompt),
-    ]
+    # 55% LLM + 35% rules + up to 10% verification bonus (rules-only when no LLM)
+    verify_conf = (lead.get("verification") or {}).get("confidence", 0) or 0
+    verify_bonus = int(0.10 * verify_conf)
+    if use_llm and llm_data:
+        final = int(0.55 * llm_score + 0.35 * rule_score) + verify_bonus
+    else:
+        final = min(100, rule_score + verify_bonus)
+    final = max(0, min(100, final))
 
-    response = llm.invoke(messages)
-    llm_data = safe_json_parse(response.content, fallback={})
-
-    llm_score = int(llm_data.get("score", rule_score))
-
-    # Weighted blend: 60% LLM + 40% rules
-    final_score = int(0.6 * llm_score + 0.4 * rule_score)
-    final_score = max(0, min(100, final_score))
-
-    # Build enriched lead
-    enriched: EnrichedLead = {
+    return {
         **lead,
-        "score": final_score,
-        "score_reasons": llm_data.get("reasons", []),
-        "recommended_service": llm_data.get("recommended_service", "AI Automation"),
-        "best_channel": llm_data.get("best_channel", _infer_channel(lead)),
+        "score": final,
+        "score_reasons": llm_data.get("reasons") or ["Rule-based score"],
+        "recommended_service": llm_data.get("recommended_service") or "Custom solution",
+        "best_channel": llm_data.get("best_channel") or _infer_channel(lead),
+        "fit_reason": llm_data.get("fit_reason") or "",
     }
 
-    return enriched
 
-
-def _rule_based_score(lead: Lead) -> int:
-    """Fast heuristic scoring — doesn't call LLM."""
+def _rule_based_score(lead: Lead, brief: SearchBrief) -> int:
     score = 0
-
-    # Authority (30 pts)
-    title_lower = lead.get("title", "").lower()
-    if any(kw in title_lower for kw in AUTHORITY_TIERS["tier1"]):
+    title = (lead.get("title") or "").lower()
+    if any(k in title for k in AUTHORITY_TIERS["tier1"]):
         score += 30
-    elif any(kw in title_lower for kw in AUTHORITY_TIERS["tier2"]):
+    elif any(k in title for k in AUTHORITY_TIERS["tier2"]):
         score += 22
-    elif any(kw in title_lower for kw in AUTHORITY_TIERS["tier3"]):
+    elif any(k in title for k in AUTHORITY_TIERS["tier3"]):
         score += 14
 
-    # Industry (25 pts)
-    industry_lower = lead.get("industry", "").lower()
-    if any(ind in industry_lower for ind in HIGH_READINESS_INDUSTRIES):
+    industry = (lead.get("industry") or "").lower()
+    target_inds = [i.lower() for i in brief.get("target_industries", [])]
+    if target_inds and any(ti in industry or industry in ti for ti in target_inds if ti):
         score += 25
-    else:
-        score += 10  # Generic industries still get some points
+    elif industry:
+        score += 10
 
-    # Company size (20 pts)
-    size = lead.get("company_size", "").lower()
+    size = (lead.get("company_size") or "").lower()
     if any(s in size for s in IDEAL_SIZE_KEYWORDS):
         score += 20
     elif size not in ("", "unknown"):
         score += 10
 
-    # Has email (15 pts — means we can reach them)
     if lead.get("email") and "@" in lead.get("email", ""):
         score += 15
-
-    # Has LinkedIn (10 pts)
     if lead.get("linkedin_url"):
         score += 10
 
@@ -168,7 +153,6 @@ def _rule_based_score(lead: Lead) -> int:
 
 
 def _infer_channel(lead: Lead) -> str:
-    """Infer best outreach channel from available data."""
     if lead.get("email") and "@" in lead.get("email", ""):
         return "email"
     if lead.get("linkedin_url"):

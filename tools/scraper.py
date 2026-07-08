@@ -1,11 +1,16 @@
 """
 tools/scraper.py
 ----------------
-Apify-powered scraping tools for LinkedIn, Reddit, and Apollo.
-Falls back gracefully when API keys are not set.
+Real lead-data providers:
+  - LinkedInScraper : Apify actor for LinkedIn people search (real profiles)
+  - ApolloEnricher  : Apollo.io People API for verified work emails
+
+Both fall back gracefully (return empty) when their API key is missing,
+so the pipeline keeps working on Tavily-sourced leads alone.
 """
 
 from __future__ import annotations
+import threading
 from typing import Optional
 from utils.helpers import log_agent, new_id
 
@@ -17,17 +22,29 @@ except ImportError:
 
 from config.settings import settings
 
+# Once Apify free-tier is exhausted, skip it for the rest of the process lifetime
+# so Finder doesn't burn minutes waiting on doomed actor runs.
+_apify_disabled = False
+_apify_lock = threading.Lock()
+
+
+def _disable_apify(reason: str) -> None:
+    global _apify_disabled
+    with _apify_lock:
+        if not _apify_disabled:
+            _apify_disabled = True
+            log_agent("LinkedInScraper", f"Disabling Apify for this session: {reason}", "warn")
+
 
 class LinkedInScraper:
     """
-    Scrapes LinkedIn for people matching target criteria.
-    Uses Apify's LinkedIn People Profile Scraper actor.
-    Actor: https://apify.com/anchor/linkedin-profile-scraper
+    Searches LinkedIn for real people matching a brief using an Apify actor.
+    Actor is configurable via APIFY_LINKEDIN_ACTOR (default:
+    harvestapi/linkedin-profile-search).
     """
 
-    ACTOR_ID = "2SyF0bVxmgGr8IVCZ"  # LinkedIn People Search actor
-
     def __init__(self):
+        self.actor = settings.apify_linkedin_actor
         self.client = (
             ApifyClient(settings.apify_api_key)
             if APIFY_AVAILABLE and settings.apify_api_key
@@ -36,105 +53,153 @@ class LinkedInScraper:
 
     def search_leads(
         self,
-        roles: list[str],
-        industries: list[str],
-        max_results: int = 20,
+        queries: list[str],
+        max_results: int = 15,
     ) -> list[dict]:
         """
-        Search LinkedIn for decision-makers in target industries.
-        Returns list of raw lead dicts.
+        Run people searches for each query string and return real leads.
+        Returns [] on any failure so the pipeline can continue on Tavily data.
         """
-        if not self.client:
-            log_agent("LinkedInScraper", "Apify not available — returning empty list", "warn")
+        global _apify_disabled
+        if not self.client or _apify_disabled:
             return []
 
-        leads = []
-        for role in roles[:3]:  # Limit roles to control costs
-            for industry in industries[:3]:
-                try:
-                    run_input = {
-                        "searchUrl": (
-                            f"https://www.linkedin.com/search/results/people/"
-                            f"?keywords={role.replace(' ', '%20')}"
-                            f"&industry={industry.replace(' ', '%20')}"
-                        ),
-                        "maxResults": max_results // (3 * 3),
-                    }
-                    run = self.client.actor(self.ACTOR_ID).call(run_input=run_input)
-                    items = list(self.client.dataset(run["defaultDatasetId"]).iterate_items())
+        leads: list[dict] = []
+        # One query only — free tier is tiny; multiple calls just burn wait time
+        for query in queries[:1]:
+            try:
+                run_input = {
+                    "searchQuery": query,
+                    "profileScraperMode": "Short",
+                    "maxItems": min(max_results, 10),
+                }
+                from datetime import timedelta
+                # Hard timeout so a stuck/limited actor cannot freeze Finder
+                run = self.client.actor(self.actor).call(
+                    run_input=run_input,
+                    run_timeout=timedelta(seconds=45),
+                    wait_duration=timedelta(seconds=45),
+                )
+                if run is None:
+                    continue
 
-                    for item in items:
-                        lead = self._map_item(item, role, industry)
-                        if lead:
-                            leads.append(lead)
+                status_msg = ""
+                if isinstance(run, dict):
+                    dataset_id = run.get("defaultDatasetId")
+                    status_msg = str(run.get("statusMessage") or run.get("status") or "")
+                else:
+                    dataset_id = getattr(run, "default_dataset_id", None)
+                    status_msg = str(
+                        getattr(run, "status_message", None)
+                        or getattr(run, "status", None)
+                        or ""
+                    )
 
-                except Exception as e:
-                    log_agent("LinkedInScraper", f"Scrape error: {e}", "warn")
+                if "free user" in status_msg.lower() or "limit reached" in status_msg.lower():
+                    _disable_apify(status_msg or "free tier limit reached")
+                    return leads[:max_results]
+
+                if not dataset_id:
+                    continue
+                items = list(self.client.dataset(dataset_id).iterate_items())
+                if not items:
+                    # Empty result after a "succeeded" free-limit run
+                    if "limit" in status_msg.lower():
+                        _disable_apify(status_msg)
+                        return []
+                for item in items:
+                    lead = self._map_item(item)
+                    if lead:
+                        leads.append(lead)
+            except Exception as e:
+                msg = str(e).lower()
+                if "limit" in msg or "quota" in msg or "payment" in msg:
+                    _disable_apify(str(e))
+                else:
+                    log_agent("LinkedInScraper", f"Apify search failed: {e}", "warn")
+                break
 
         return leads[:max_results]
 
-    def _map_item(self, item: dict, role: str, industry: str) -> dict | None:
-        """Map Apify result to our Lead schema."""
-        name = item.get("fullName") or item.get("name", "")
+    def _map_item(self, item: dict) -> dict | None:
+        """Map an Apify result to our Lead schema (tolerant of field names/nulls)."""
+        name = (
+            item.get("fullName") or item.get("name")
+            or f"{item.get('firstName') or ''} {item.get('lastName') or ''}".strip()
+        )
         if not name:
             return None
+        profile = item.get("profileUrl") or item.get("linkedinUrl") or item.get("url") or ""
+        company = item.get("companyName") or item.get("company") or ""
         return {
             "id": new_id(),
             "name": name,
-            "first_name": name.split()[0] if name else "",
-            "title": item.get("headline", role),
-            "company": item.get("companyName", ""),
-            "company_website": item.get("companyUrl", ""),
-            "linkedin_url": item.get("profileUrl", ""),
-            "email": item.get("email", ""),
-            "location": item.get("location", ""),
-            "industry": industry,
-            "company_size": item.get("companySize", "unknown"),
-            "source": "linkedin",
+            "first_name": item.get("firstName") or (name.split()[0] if name else ""),
+            "title": item.get("headline") or item.get("title") or item.get("occupation") or "",
+            "company": company,
+            "company_website": item.get("companyWebsite") or item.get("companyUrl") or "",
+            "linkedin_url": profile,
+            "email": item.get("email") or "",
+            "location": item.get("location") or item.get("addressWithCountry") or "",
+            "industry": item.get("industry") or "",
+            "company_size": str(item.get("companySize") or ""),
+            "source": "apify",
+            "source_url": profile,
+            "snippet": item.get("summary") or item.get("about") or "",
         }
 
 
 class ApolloEnricher:
     """
-    Enriches leads using Apollo.io People API.
-    Finds verified email addresses for cold outreach.
+    Enriches leads using Apollo.io People API — finds verified work emails.
+    Optional: only active when APOLLO_API_KEY is set.
     """
 
-    BASE_URL = "https://api.apollo.io/v1"
+    BASE_URL = "https://api.apollo.io/api/v1"
 
     def __init__(self):
         self.api_key = settings.apollo_api_key
         self.available = bool(self.api_key)
 
     def enrich_lead(self, name: str, company: str, domain: str = "") -> dict:
-        """
-        Try to find email and enrichment data for a person.
-        Returns partial dict with email if found.
-        """
+        """Find email + enrichment for a person. Returns {} if unavailable."""
         if not self.available:
             return {}
 
         import httpx
+        parts = (name or "").split()
+        first = parts[0] if parts else ""
+        last = " ".join(parts[1:]) if len(parts) > 1 else ""
+        clean_domain = (
+            domain.replace("https://", "").replace("http://", "").rstrip("/")
+        )
         try:
             resp = httpx.post(
                 f"{self.BASE_URL}/people/match",
-                headers={"Content-Type": "application/json", "Cache-Control": "no-cache"},
-                json={
-                    "api_key": self.api_key,
-                    "first_name": name.split()[0],
-                    "last_name": " ".join(name.split()[1:]) if len(name.split()) > 1 else "",
-                    "organization_name": company,
-                    "domain": domain.replace("https://", "").replace("http://", "").rstrip("/"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Cache-Control": "no-cache",
+                    "x-api-key": self.api_key,
                 },
-                timeout=10,
+                json={
+                    "first_name": first,
+                    "last_name": last,
+                    "organization_name": company,
+                    "domain": clean_domain,
+                    "reveal_personal_emails": False,
+                },
+                timeout=12,
             )
             if resp.status_code == 200:
-                data = resp.json().get("person", {})
+                data = resp.json().get("person", {}) or {}
+                org = data.get("organization", {}) or {}
                 return {
-                    "email": data.get("email", ""),
-                    "linkedin_url": data.get("linkedin_url", ""),
-                    "title": data.get("title", ""),
-                    "company_size": str(data.get("organization", {}).get("estimated_num_employees", "")),
+                    "email": data.get("email", "") or "",
+                    "email_source": "apollo" if data.get("email") else "",
+                    "linkedin_url": data.get("linkedin_url", "") or "",
+                    "title": data.get("title", "") or "",
+                    "company_website": org.get("website_url", "") or "",
+                    "company_size": str(org.get("estimated_num_employees", "") or ""),
                 }
         except Exception as e:
             log_agent("ApolloEnricher", f"Enrichment failed for {name}: {e}", "warn")

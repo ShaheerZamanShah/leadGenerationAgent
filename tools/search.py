@@ -58,6 +58,33 @@ class SearchTool:
             log_agent("SearchTool", f"Search error for '{query}': {e}", "error")
             return f"Search failed: {str(e)}"
 
+    def search_raw(self, query: str, max_results: int = 5, depth: str = "advanced") -> list[dict]:
+        """
+        Run a search and return the raw structured results (title, url, content).
+        Used by the Finder to extract REAL people/companies from real pages.
+        """
+        if not self.client:
+            return []
+        try:
+            response = self.client.search(
+                query=query,
+                max_results=max_results,
+                search_depth=depth,
+                include_answer=False,
+            )
+            out = []
+            for r in response.get("results", []):
+                out.append({
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "content": r.get("content", ""),
+                    "score": r.get("score", 0),
+                })
+            return out
+        except Exception as e:
+            log_agent("SearchTool", f"Raw search error for '{query}': {e}", "warn")
+            return []
+
     def search_company(self, company: str, website: str = "") -> str:
         """Comprehensive company research — runs multiple targeted queries."""
         queries = [

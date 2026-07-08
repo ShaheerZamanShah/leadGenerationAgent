@@ -26,17 +26,23 @@ class Settings:
 
     # Scraping
     apify_api_key: str = field(default_factory=lambda: os.getenv("APIFY_API_KEY", ""))
+    apify_linkedin_actor: str = field(default_factory=lambda: os.getenv("APIFY_LINKEDIN_ACTOR", "harvestapi/linkedin-profile-search"))
     apollo_api_key: str = field(default_factory=lambda: os.getenv("APOLLO_API_KEY", ""))
 
     # Email
     gmail_user: str = field(default_factory=lambda: os.getenv("GMAIL_USER", ""))
     gmail_app_password: str = field(default_factory=lambda: os.getenv("GMAIL_APP_PASSWORD", ""))
+    enable_email_sending: bool = field(default_factory=lambda: os.getenv("ENABLE_EMAIL_SENDING", "false").lower() == "true")
 
     # Pipeline config
     lead_score_threshold: int = field(default_factory=lambda: int(os.getenv("LEAD_SCORE_THRESHOLD", "60")))
-    max_leads_per_run: int = field(default_factory=lambda: int(os.getenv("MAX_LEADS_PER_RUN", "20")))
+    max_leads_per_run: int = field(default_factory=lambda: int(os.getenv("MAX_LEADS_PER_RUN", "15")))
     human_in_loop: bool = field(default_factory=lambda: os.getenv("HUMAN_IN_LOOP", "false").lower() == "true")
     output_dir: Path = field(default_factory=lambda: Path(os.getenv("OUTPUT_DIR", "data/output")))
+
+    # Verification
+    strict_verification: bool = field(default_factory=lambda: os.getenv("STRICT_VERIFICATION", "false").lower() == "true")
+    smtp_probe: bool = field(default_factory=lambda: os.getenv("SMTP_PROBE", "false").lower() == "true")
 
     # Shaheer's profile
     developer_name: str = "Muhammad Shaheer Zaman Shah"
@@ -45,6 +51,17 @@ class Settings:
     developer_email: str = "shaheerzaman023@gmail.com"
     developer_linkedin: str = "https://linkedin.com/in/shaheer-zaman"
     developer_portfolio: str = "https://shaheer-portfolio.dev"
+
+    # Default offering (used when the user's prompt doesn't specify one).
+    # The Planner may override this from the prompt.
+    default_offering: str = (
+        "Custom AI/ML & Agentic AI development — LangGraph multi-agent systems, "
+        "RAG knowledge bases & chatbots, workflow automation, and computer vision."
+    )
+    default_offering_summary: str = (
+        "I build production AI systems (agentic pipelines, RAG chatbots, automation) "
+        "that cut manual work and ship fast."
+    )
 
     # Key projects — enriched from CV
     projects: list = field(default_factory=lambda: [

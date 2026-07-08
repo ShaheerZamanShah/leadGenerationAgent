@@ -17,8 +17,10 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-PORT = 8000
+PORT = int(os.environ.get("PORT", "8080"))
 URL = f"http://localhost:{PORT}"
+# Skip auto-opening the browser in headless / deployed environments
+OPEN_BROWSER = os.environ.get("OPEN_BROWSER", "1") != "0"
 
 
 def open_browser():
@@ -37,8 +39,9 @@ if __name__ == "__main__":
     print("=" * 65)
     print()
 
-    # Open browser in background thread
-    threading.Thread(target=open_browser, daemon=True).start()
+    # Open browser in background thread (local only)
+    if OPEN_BROWSER:
+        threading.Thread(target=open_browser, daemon=True).start()
 
     # Start uvicorn
     import uvicorn

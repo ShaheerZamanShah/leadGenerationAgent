@@ -14,9 +14,19 @@ Usage:
 from __future__ import annotations
 import argparse
 import csv
+import os
 import sys
 import uuid
 from pathlib import Path
+
+# Force UTF-8 on Windows so rich can print emoji/unicode in the console.
+if sys.platform == "win32":
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 from rich.console import Console
 
@@ -33,12 +43,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Outreach Agent — AI-powered B2B lead generation & personalised messaging"
     )
+    parser.add_argument("--prompt", "-p", type=str, default=None,
+                        help="Natural-language description of who to find (e.g. 'SaaS founders in the UK who need customer support automation')")
     parser.add_argument("--dry-run", action="store_true", help="Don't send emails, just display")
     parser.add_argument("--leads", type=int, default=None, help="Max leads to process")
     parser.add_argument("--no-review", action="store_true", help="Auto-approve all messages")
     parser.add_argument("--from-csv", type=str, default=None, help="Load leads from CSV file")
-    parser.add_argument("--industries", nargs="*", default=None, help="Target industries override")
-    parser.add_argument("--roles", nargs="*", default=None, help="Target roles override")
     return parser.parse_args()
 
 
@@ -91,13 +101,24 @@ def main() -> None:
 
     run_id = str(uuid.uuid4())[:8]
 
+    # ── Resolve the campaign prompt ───────────────────────────────────────────
+    prompt = args.prompt
+    if not prompt and not args.from_csv:
+        console.print("[bold cyan]Describe who you want to reach[/bold cyan] "
+                      "[dim](e.g. 'SaaS founders in Europe who need AI customer support')[/dim]")
+        try:
+            prompt = console.input("[cyan]> [/cyan]").strip()
+        except (EOFError, KeyboardInterrupt):
+            prompt = ""
+
     # ── Build initial state ───────────────────────────────────────────────────
     initial_state: OutreachState = {
         "run_id": run_id,
-        "target_industries": args.industries or settings.target_industries,
-        "target_roles": args.roles or settings.target_roles,
+        "user_prompt": prompt or "",
+        "brief": {},
         "max_leads": args.leads or settings.max_leads_per_run,
         "raw_leads": [],
+        "verified_leads": [],
         "scored_leads": [],
         "filtered_leads": [],
         "researched_leads": [],

@@ -123,11 +123,12 @@ def _display_message_card(
     lead: dict,
 ) -> None:
     """Pretty-print a message for review."""
-    channel_emoji = {"email": "📧", "linkedin": "💼", "reddit": "🤖"}.get(msg.get("channel", ""), "📨")
+    channel = msg.get("channel") or "email"
+    channel_emoji = {"email": "📧", "linkedin": "💼", "reddit": "🤖"}.get(channel, "📨")
 
     # Header panel
     header = (
-        f"[bold]{index}/{total}[/bold] · {channel_emoji} [cyan]{msg.get('channel', '').upper()}[/cyan]\n"
+        f"[bold]{index}/{total}[/bold] · {channel_emoji} [cyan]{channel.upper()}[/cyan]\n"
         f"To: [bold]{lead.get('name', 'Unknown')}[/bold] "
         f"({lead.get('title', '')} @ {lead.get('company', '')})\n"
         f"Score: [green]{lead.get('score', 'N/A')}[/green] · "

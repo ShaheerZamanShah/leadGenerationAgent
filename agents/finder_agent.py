@@ -1,309 +1,288 @@
 """
 agents/finder_agent.py
 ----------------------
-Agent 1 — Prospect Discovery (v2: web-search powered + CV-aware)
+Agent 1 — Prospect Discovery (real leads only)
 
-Discovers potential clients from multiple channels:
-  - LinkedIn via Tavily web search (real public profiles)
-  - Apify LinkedIn scraper (if API key set)
-  - LLM-generated realistic leads (fallback / fill)
+Discovers REAL potential clients based on the Planner's brief:
+  1. Apify LinkedIn people search (real profiles) — if APIFY_API_KEY set
+  2. Tavily web search over the brief's queries, then LLM extraction of the
+     real people/companies that actually appear in the results
 
-Targets 15-20 diverse personas who need Agentic AI/ML services:
-  CEOs, CTOs, Founders, Operations Heads, Customer Service Directors,
-  Marketing Directors, Sales VPs — across industries that benefit from AI.
+There is NO "invent fake people" fallback. If the web yields nothing, the
+finder returns an empty list and the pipeline ends gracefully.
 
-Outputs: raw_leads appended to state
+Outputs: raw_leads appended to state.
 """
 
 from __future__ import annotations
-import json
 import re
 from langchain_core.messages import SystemMessage, HumanMessage
-from state.schema import OutreachState, Lead
-from utils.helpers import log_agent, safe_json_parse, new_id, now_iso
-from utils.llm import fast_llm, smart_llm
+from state.schema import OutreachState, Lead, SearchBrief
+from utils.helpers import log_agent, safe_json_parse, new_id
+from utils.llm import invoke_smart_or_fast
 from tools.scraper import linkedin_scraper
 from tools.search import search_tool
+from tools.verification import is_valid_linkedin, normalize_url, domain_from_url
 from config.settings import settings
-from prompts.templates import FINDER_SYSTEM, FINDER_USER
-from utils.cv_parser import get_cv_summary
-
-
-# ── Diverse search queries for real lead discovery ────────────────────────────
-LINKEDIN_SEARCH_QUERIES = [
-    "CEO founder startup automate customer service operations site:linkedin.com",
-    "CTO \"looking for\" AI automation developer startup site:linkedin.com",
-    "founder e-commerce \"no AI team\" automate processes site:linkedin.com",
-    "head of operations logistics SaaS manual processes AI site:linkedin.com",
-    "CEO small business \"customer support\" \"chatbot\" OR \"automation\" site:linkedin.com",
-    "founder healthcare OR legaltech OR fintech AI implementation site:linkedin.com",
-    "VP Sales marketing agency \"lead generation\" automation AI site:linkedin.com",
-    "startup founder \"we need\" AI developer chatbot RAG site:linkedin.com",
-    "director engineering SaaS \"build AI\" OR \"automate\" workflow site:linkedin.com",
-    "CEO real estate proptech AI OR automation OR chatbot site:linkedin.com",
-]
-
-WEB_SEARCH_QUERIES = [
-    "startup CEO looking to automate customer service with AI 2024 2025",
-    "SaaS founder hiring AI/ML developer for chatbot automation",
-    "small business owner wants to implement AI chatbot customer service",
-    "e-commerce founder automate inventory management AI",
-    "logistics company CEO automate operations with AI",
-    "healthcare startup founder AI implementation",
-    "legaltech startup CTO AI document automation",
-    "edtech founder personalized learning AI",
-    "fintech CEO automate compliance reporting AI",
-    "marketing agency director AI content automation tools",
-]
+from prompts.templates import FINDER_EXTRACT_SYSTEM, FINDER_EXTRACT_USER
 
 
 def finder_agent(state: OutreachState) -> dict:
-    """
-    LangGraph node: discovers prospects from all configured channels.
+    """LangGraph node: discover real prospects from LinkedIn + web search."""
+    log_agent("FinderAgent", "🔎 Discovering real prospects (LinkedIn + web)...", "info")
 
-    Strategy:
-    1. Try LinkedIn via Apify (real data, requires API key)
-    2. Web search via Tavily for LinkedIn profiles + prospect signals
-    3. Fall back to LLM-generated realistic leads to fill quota
-    4. Merge, deduplicate, cap at max_leads
-    """
-    log_agent("FinderAgent", "Starting prospect discovery (web + LinkedIn + LLM)...", "info")
-
+    brief: SearchBrief = state.get("brief", {}) or {}
     max_leads = state.get("max_leads", settings.max_leads_per_run)
-    target_roles = state.get("target_roles", settings.target_roles)
-    target_industries = state.get("target_industries", settings.target_industries)
+    queries = brief.get("search_queries", []) or []
     all_leads: list[Lead] = []
 
-    # ── Step 1: LinkedIn scraping via Apify ──────────────────────────────────
-    if settings.apify_api_key:
+    # ── Step 1: Apify LinkedIn people search (real profiles) ──────────────────
+    if settings.apify_api_key and queries:
         try:
-            log_agent("FinderAgent", "Attempting LinkedIn scrape via Apify...", "info")
-            linkedin_leads = linkedin_scraper.search_leads(
-                roles=target_roles[:5],
-                industries=target_industries[:5],
-                max_results=max_leads // 2,
-            )
-            if linkedin_leads:
-                log_agent("FinderAgent", f"LinkedIn: found {len(linkedin_leads)} leads", "done")
-                all_leads.extend(linkedin_leads)
+            log_agent("FinderAgent", "Querying LinkedIn via Apify...", "info")
+            li_leads = linkedin_scraper.search_leads(queries, max_results=max_leads)
+            if li_leads:
+                log_agent("FinderAgent", f"Apify: {len(li_leads)} real profiles", "done")
+                all_leads.extend(li_leads)
             else:
-                log_agent("FinderAgent", "LinkedIn scraper returned 0 leads", "warn")
+                log_agent("FinderAgent", "Apify returned no profiles — continuing with web search", "warn")
         except Exception as e:
-            log_agent("FinderAgent", f"LinkedIn scrape failed: {e}", "warn")
+            log_agent("FinderAgent", f"Apify search skipped: {e}", "warn")
 
-    # ── Step 2: Tavily web search for real prospect signals ───────────────────
+    # ── Step 2: Tavily web search + real-lead extraction ─────────────────────
     if settings.tavily_api_key and len(all_leads) < max_leads:
-        log_agent("FinderAgent", "Running web searches to find prospect signals...", "info")
-        web_leads = _find_leads_via_web_search(
-            count=max(max_leads - len(all_leads), 8),
-            roles=target_roles,
-            industries=target_industries,
-        )
-        log_agent("FinderAgent", f"Web search: found {len(web_leads)} prospect signals", "done")
+        need = max_leads - len(all_leads)
+        web_leads = _find_leads_via_web_search(brief, count=need)
+        log_agent("FinderAgent", f"Web search: extracted {len(web_leads)} real leads", "done")
         all_leads.extend(web_leads)
 
-    # ── Step 3: LLM-generated leads (fills remaining quota) ──────────────────
-    remaining = max_leads - len(all_leads)
-    if remaining > 0:
-        log_agent("FinderAgent", f"Generating {remaining} additional leads via LLM...", "info")
-        llm_leads = _generate_leads_via_llm(
-            count=remaining,
-            roles=target_roles,
-            industries=target_industries,
+    # ── Step 3: Deduplicate + clean ──────────────────────────────────────────
+    unique = _dedupe(all_leads)[:max_leads]
+
+    if not unique:
+        log_agent(
+            "FinderAgent",
+            "No real prospects found for this brief. Try a broader or more specific prompt.",
+            "warn",
         )
-        log_agent("FinderAgent", f"LLM: generated {len(llm_leads)} leads", "done")
-        all_leads.extend(llm_leads)
 
-    # ── Step 4: Deduplicate on company+name ──────────────────────────────────
-    seen = set()
-    unique_leads = []
-    for lead in all_leads:
-        key = f"{lead.get('company', '').lower().strip()}:{lead.get('name', '').lower().strip()}"
-        if key not in seen and lead.get("name"):
-            seen.add(key)
-            if not lead.get("id"):
-                lead["id"] = new_id()
-            unique_leads.append(lead)
-
-    unique_leads = unique_leads[:max_leads]
-    log_agent("FinderAgent", f"Discovery complete: {len(unique_leads)} unique leads", "done")
-
+    log_agent("FinderAgent", f"✓ Discovery complete: {len(unique)} real leads", "done")
     return {
-        "raw_leads": unique_leads,
+        "raw_leads": unique,
         "current_agent": "finder",
-        "logs": [log_agent("FinderAgent", f"Discovered {len(unique_leads)} prospects", "done")],
+        "logs": [log_agent("FinderAgent", f"Discovered {len(unique)} real prospects", "done")],
     }
 
 
-def _find_leads_via_web_search(
-    count: int,
-    roles: list[str],
-    industries: list[str],
-) -> list[Lead]:
-    """
-    Use Tavily to find real prospect signals from LinkedIn and web.
-    Extracts names, companies, and LinkedIn URLs from search snippets.
-    """
-    llm = smart_llm(temperature=0.3)
-    leads: list[Lead] = []
-    queries_to_run = LINKEDIN_SEARCH_QUERIES[:5] + WEB_SEARCH_QUERIES[:5]
+def _find_leads_via_web_search(brief: SearchBrief, count: int) -> list[Lead]:
+    """Run the brief's search queries on Tavily and extract REAL leads."""
+    queries = brief.get("search_queries", []) or []
+    # Always include LinkedIn-focused queries so heuristic extraction has anchors
+    roles = (brief.get("target_roles") or ["Founder", "CEO"])[:3]
+    industries = (brief.get("target_industries") or ["SaaS"])[:2]
+    locations = (brief.get("locations") or ["Europe"])[:2]
+    extra = [
+        f'site:linkedin.com/in "{" OR ".join(roles)}" {" OR ".join(industries)} {" OR ".join(locations)}',
+        f'{" ".join(roles[:2])} {" ".join(industries[:1])} startup linkedin',
+    ]
+    all_queries = list(dict.fromkeys(list(queries[:8]) + extra))
 
-    # Build combined search results
-    all_results_text = []
-    for query in queries_to_run[:8]:  # Limit to control API usage
-        try:
-            result = search_tool.search(query, max_results=3)
-            if result and "Search failed" not in result and "unavailable" not in result:
-                all_results_text.append(f"Query: {query}\n{result}")
-        except Exception:
-            continue
+    results: list[dict] = []
+    seen_urls: set[str] = set()
 
-    if not all_results_text:
+    for q in all_queries:
+        for r in search_tool.search_raw(q, max_results=5, depth="basic"):
+            url = r.get("url", "")
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                results.append(r)
+
+    if not results:
         return []
 
-    combined_results = "\n\n---\n\n".join(all_results_text[:6])
+    # Build a compact evidence block for the extractor
+    blocks = []
+    for r in results[:24]:
+        blocks.append(
+            f"- title: {r.get('title', '')}\n  url: {r.get('url', '')}\n  snippet: {r.get('content', '')[:300]}"
+        )
+    results_text = "\n".join(blocks)
 
-    # Use LLM to extract structured lead data from search results
-    extract_prompt = f"""You are analyzing web search results to find real people who are potential clients for an Agentic AI/ML developer.
-
-Search results:
-{combined_results[:5000]}
-
-From these results, extract up to {count} real or realistic people who:
-1. Are founders, CEOs, CTOs, Operations heads, VP Sales, or similar decision-makers
-2. Work in industries that benefit from AI: SaaS, E-commerce, Healthcare, Logistics, Legal Tech, 
-   Finance, HR Tech, EdTech, Real Estate, Marketing, Customer Service, Retail, InsurTech
-3. Likely need: AI chatbots, automation, RAG systems, agentic AI workflows, or computer vision
-
-For each person found (or inferred from company context), return structured JSON.
-If a LinkedIn URL appears in the results, include it. Otherwise generate a plausible one.
-
-Return a JSON array of up to {count} objects, each with EXACTLY these keys:
-{{
-  "id": "unique 8-char alphanumeric",
-  "name": "Full Name",
-  "first_name": "First Name",
-  "title": "Job Title",
-  "company": "Company Name",
-  "company_website": "https://...",
-  "linkedin_url": "https://linkedin.com/in/username",
-  "email": "person@company.com",
-  "location": "City, Country",
-  "industry": "Industry",
-  "company_size": "10-50",
-  "source": "web_search"
-}}
-
-Be specific and realistic. Use actual company names from the results where possible.
-Vary industries, locations (US, UK, EU, Middle East, Asia), and roles.
-Return ONLY the JSON array, no other text."""
-
+    leads: list[Lead] = []
     try:
-        response = llm.invoke([
-            SystemMessage(content="You extract structured lead data from web search results. Return only valid JSON arrays."),
-            HumanMessage(content=extract_prompt),
-        ])
-        leads_data = safe_json_parse(response.content, fallback=[])
-        if isinstance(leads_data, list):
-            for item in leads_data:
-                if isinstance(item, dict) and item.get("name"):
-                    lead: Lead = {
-                        "id": item.get("id", new_id()),
-                        "name": item.get("name", ""),
-                        "first_name": item.get("first_name", item.get("name", "").split()[0] if item.get("name") else ""),
-                        "title": item.get("title", ""),
-                        "company": item.get("company", ""),
-                        "company_website": item.get("company_website", ""),
-                        "linkedin_url": item.get("linkedin_url", ""),
-                        "email": item.get("email", ""),
-                        "location": item.get("location", ""),
-                        "industry": item.get("industry", ""),
-                        "company_size": item.get("company_size", "unknown"),
-                        "source": "web_search",
-                    }
+        response = invoke_smart_or_fast(
+            [
+                SystemMessage(content=FINDER_EXTRACT_SYSTEM),
+                HumanMessage(content=FINDER_EXTRACT_USER.format(
+                    goal=brief.get("goal", ""),
+                    roles=", ".join(brief.get("target_roles", [])),
+                    industries=", ".join(brief.get("target_industries", [])),
+                    locations=", ".join(brief.get("locations", [])),
+                    results=results_text[:4500],
+                    count=count,
+                )),
+            ],
+            temperature=0.2,
+            label="FinderAgent",
+            prefer_fast=True,
+        )
+        data = safe_json_parse(response.content, fallback=[])
+        if isinstance(data, list):
+            for item in data:
+                lead = _sanitize_extracted(item)
+                if lead:
                     leads.append(lead)
     except Exception as e:
-        log_agent("FinderAgent", f"Web search lead extraction failed: {e}", "warn")
+        log_agent("FinderAgent", f"LLM extraction failed ({e}) — using heuristic extractor", "warn")
+
+    if len(leads) < count:
+        heuristic = _heuristic_extract_leads(results, brief, count=count)
+        log_agent("FinderAgent", f"Heuristic extractor found {len(heuristic)} leads", "info")
+        leads.extend(heuristic)
+
+    return _dedupe(leads)[:count]
+
+
+def _heuristic_extract_leads(results: list[dict], brief: SearchBrief, count: int) -> list[Lead]:
+    """
+    Extract real leads from search results without an LLM.
+    Prefers LinkedIn profile URLs; also maps company pages with a role from the title.
+    """
+    roles = [r.lower() for r in (brief.get("target_roles") or [])]
+    industries = brief.get("target_industries") or []
+    industry = industries[0] if industries else ""
+    leads: list[Lead] = []
+
+    linkedin_re = re.compile(
+        r"https?://(?:[a-z]{2,3}\.)?linkedin\.com/in/[A-Za-z0-9_\-%]+/?",
+        re.I,
+    )
+    # "Jane Doe - Founder at Acme" / "Jane Doe | CEO @ Acme"
+    title_re = re.compile(
+        r"^([A-Z][a-zA-Z.'\-]+(?:\s+[A-Z][a-zA-Z.'\-]+){0,3})\s*[-–|]\s*(.+?)(?:\s+(?:at|@|·)\s+(.+))?$",
+    )
+
+    for r in results:
+        url = (r.get("url") or "").strip()
+        title = (r.get("title") or "").strip()
+        snippet = (r.get("content") or "").strip()
+        blob = f"{title}\n{snippet}\n{url}"
+
+        li_match = linkedin_re.search(blob)
+        linkedin = li_match.group(0).rstrip("/") if li_match else ""
+        if linkedin and not is_valid_linkedin(linkedin):
+            linkedin = ""
+
+        name = ""
+        role = ""
+        company = ""
+        m = title_re.match(title.replace(" | LinkedIn", "").replace(" - LinkedIn", ""))
+        if m:
+            name = m.group(1).strip()
+            role = (m.group(2) or "").strip()
+            company = (m.group(3) or "").strip()
+
+        if not name and linkedin:
+            # slug → rough name: jane-doe-123 → Jane Doe
+            slug = linkedin.rstrip("/").split("/")[-1]
+            parts = [p for p in re.split(r"[-_]", slug) if p and not p.isdigit()]
+            if 1 <= len(parts) <= 4:
+                name = " ".join(p.capitalize() for p in parts[:3])
+
+        website = ""
+        if "linkedin.com" not in url.lower():
+            website = normalize_url(url)
+
+        # Need a real anchor
+        if not linkedin and not domain_from_url(website):
+            continue
+        if not name and not company:
+            # Company-only page
+            company = title.split("|")[0].split("-")[0].strip()[:80]
+            if not company:
+                continue
+            name = company
+            role = roles[0].title() if roles else "Founder"
+
+        # Soft role filter when we have role text
+        if role and roles and not any(rr in role.lower() for rr in roles):
+            # still keep LinkedIn profiles — titles are often messy
+            if not linkedin:
+                continue
+
+        item = {
+            "name": name or company,
+            "first_name": (name.split()[0] if name else ""),
+            "title": role or (roles[0].title() if roles else ""),
+            "company": company or name,
+            "company_website": website,
+            "linkedin_url": linkedin,
+            "email": "",
+            "location": "",
+            "industry": industry,
+            "company_size": "",
+            "source_url": url,
+            "snippet": snippet[:400],
+        }
+        lead = _sanitize_extracted(item)
+        if lead:
+            leads.append(lead)
+        if len(leads) >= count:
+            break
 
     return leads
 
 
-def _generate_leads_via_llm(
-    count: int,
-    roles: list[str],
-    industries: list[str],
-) -> list[Lead]:
-    """
-    Use the LLM to generate realistic, diverse lead profiles.
-    Fallback when scraping APIs are unavailable or quota not met.
-    """
-    cv = get_cv_summary()
-    services_offered = ", ".join([p["name"] for p in cv["projects"]])
+def _sanitize_extracted(item: dict) -> Lead | None:
+    """Turn one extracted object into a clean Lead, dropping fabricated data."""
+    if not isinstance(item, dict):
+        return None
+    name = (item.get("name") or "").strip()
+    company = (item.get("company") or "").strip()
+    if not name and not company:
+        return None
 
-    llm = smart_llm(temperature=0.8)
+    linkedin = (item.get("linkedin_url") or "").strip()
+    if linkedin and not is_valid_linkedin(linkedin):
+        # Keep only genuine profile URLs; discard invented ones
+        linkedin = ""
 
-    prompt = f"""Generate {count} highly realistic B2B lead profiles for an Agentic AI/ML Developer named Shaheer.
+    website = normalize_url(item.get("company_website") or "")
 
-Services Shaheer offers: {services_offered}
+    # A real lead needs at least one anchor: a real LinkedIn URL or a company domain
+    if not linkedin and not domain_from_url(website):
+        return None
 
-Target criteria:
-- Industries: {", ".join(industries[:10])}
-- Roles: {", ".join(roles[:8])}
-- Company size: 5-500 employees (SMBs, not Fortune 500)
-- Pain signs: manual processes, no internal AI team, customer support issues, data silos, 
-  growth without automation, repetitive workflows that AI could handle
+    first = (item.get("first_name") or (name.split()[0] if name else "")).strip()
+    return {
+        "id": new_id(),
+        "name": name or company,
+        "first_name": first,
+        "title": (item.get("title") or "").strip(),
+        "company": company,
+        "company_website": website,
+        "linkedin_url": linkedin,
+        "email": (item.get("email") or "").strip(),
+        "location": (item.get("location") or "").strip(),
+        "industry": (item.get("industry") or "").strip(),
+        "company_size": str(item.get("company_size") or "").strip(),
+        "source": "tavily",
+        "source_url": (item.get("source_url") or "").strip(),
+        "snippet": (item.get("snippet") or "").strip()[:400],
+    }
 
-Make them DIVERSE:
-- Mix of US, UK, EU, Middle East, Asia, Australia locations
-- Mix of male/female names
-- Mix of industries (NOT all from the same sector)
-- Mix of company stages (early startup to established SMB)
-- Include some with LinkedIn URLs, some with emails, some with both
 
-Return a JSON array of exactly {count} objects with these EXACT keys:
-{{
-  "id": "unique 8-char alphanumeric string",
-  "name": "Full Name",
-  "first_name": "First Name",
-  "title": "Job Title",
-  "company": "Company Name",
-  "company_website": "https://realdomainexample.com",
-  "linkedin_url": "https://linkedin.com/in/username",
-  "email": "person@company.com",
-  "location": "City, Country",
-  "industry": "Exact Industry",
-  "company_size": "e.g. 10-50",
-  "source": "llm_generated"
-}}
-
-Be VERY specific and realistic. Use believable company names and realistic emails.
-Return ONLY the JSON array."""
-
-    try:
-        response = llm.invoke([
-            SystemMessage(content=FINDER_SYSTEM),
-            HumanMessage(content=prompt),
-        ])
-        leads_data = safe_json_parse(response.content, fallback=[])
-        leads = []
-        for item in leads_data:
-            if isinstance(item, dict) and item.get("name"):
-                lead: Lead = {
-                    "id": item.get("id", new_id()),
-                    "name": item.get("name", ""),
-                    "first_name": item.get("first_name", item.get("name", "").split()[0] if item.get("name") else ""),
-                    "title": item.get("title", ""),
-                    "company": item.get("company", ""),
-                    "company_website": item.get("company_website", ""),
-                    "linkedin_url": item.get("linkedin_url", ""),
-                    "email": item.get("email", ""),
-                    "location": item.get("location", ""),
-                    "industry": item.get("industry", ""),
-                    "company_size": item.get("company_size", "unknown"),
-                    "source": item.get("source", "llm_generated"),
-                }
-                leads.append(lead)
-        return leads
-    except Exception as e:
-        log_agent("FinderAgent", f"LLM lead generation failed: {e}", "error")
-        return []
+def _dedupe(leads: list[Lead]) -> list[Lead]:
+    seen: set[str] = set()
+    out: list[Lead] = []
+    for lead in leads:
+        key = (
+            (lead.get("linkedin_url") or "").lower().strip()
+            or f"{(lead.get('company') or '').lower().strip()}:{(lead.get('name') or '').lower().strip()}"
+        )
+        if key and key not in seen:
+            seen.add(key)
+            if not lead.get("id"):
+                lead["id"] = new_id()
+            out.append(lead)
+    return out

@@ -1,0 +1,33 @@
+# Render.com blueprint — deploy with one click from your GitHub repo.
+# Docs: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: research-outreach-agent
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: OPEN_BROWSER
+        value: "0"
+      - key: GROQ_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: APIFY_API_KEY
+        sync: false
+      - key: APIFY_LINKEDIN_ACTOR
+        value: harvestapi/linkedin-profile-search
+      - key: APOLLO_API_KEY
+        sync: false
+      - key: LEAD_SCORE_THRESHOLD
+        value: "60"
+      - key: MAX_LEADS_PER_RUN
+        value: "15"
+      - key: HUMAN_IN_LOOP
+        value: "false"
+      - key: STRICT_VERIFICATION
+        value: "false"
+      - key: ENABLE_EMAIL_SENDING
+        value: "false"

@@ -8,13 +8,55 @@ from __future__ import annotations
 import uuid
 import json
 import re
+import threading
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
 console = Console()
+
+# SSE / UI listeners — agents always call log_agent(); server registers per-run callbacks.
+# Do NOT monkey-patch log_agent: agent modules bind the name at import time, so a patch
+# only works for the first campaign and leaves later runs stuck on "Initializing agents".
+#
+# Listeners are keyed by run_id. A process-wide "active campaign" id routes logs from
+# worker threads (ThreadPoolExecutor) that don't inherit thread-locals.
+_LogListener = Callable[[dict], None]
+_log_listeners: dict[str, _LogListener] = {}
+_log_lock = threading.Lock()
+_active_campaign_id: str | None = None
+
+
+def set_active_campaign(run_id: str | None) -> None:
+    """Mark which campaign currently owns the live log feed."""
+    global _active_campaign_id
+    with _log_lock:
+        _active_campaign_id = run_id
+
+
+def get_active_campaign() -> str | None:
+    with _log_lock:
+        return _active_campaign_id
+
+
+def add_log_listener(run_id: str, callback: _LogListener) -> _LogListener:
+    with _log_lock:
+        _log_listeners[run_id] = callback
+    return callback
+
+
+def remove_log_listener(run_id: str) -> None:
+    with _log_lock:
+        _log_listeners.pop(run_id, None)
+
+
+def clear_all_log_listeners() -> None:
+    with _log_lock:
+        _log_listeners.clear()
+        global _active_campaign_id
+        _active_campaign_id = None
 
 
 def new_id() -> str:
@@ -26,16 +68,25 @@ def now_iso() -> str:
 
 
 def log_agent(agent: str, message: str, status: str = "info") -> dict:
-    """Create a structured log entry."""
+    """Create a structured log entry and notify any registered listeners."""
     colours = {"info": "cyan", "done": "green", "error": "red", "warn": "yellow"}
     colour = colours.get(status, "white")
     console.print(f"[{colour}][{agent}][/{colour}] {message}")
-    return {
+    entry = {
         "agent": agent,
         "status": status,
         "message": message,
         "timestamp": now_iso(),
     }
+    with _log_lock:
+        rid = _active_campaign_id
+        cb = _log_listeners.get(rid) if rid else None
+    if cb:
+        try:
+            cb(entry)
+        except Exception:
+            pass
+    return entry
 
 
 def safe_json_parse(text: str, fallback: Any = None) -> Any:
